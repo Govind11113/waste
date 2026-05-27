@@ -27,6 +27,7 @@ CLIP_LABELS = LOCAL_CLASSES + [
 ]
 
 LOCAL_CONF_THRESHOLD = 0.55
+LOCAL_NO_FALLBACK_THRESHOLD = 0.30
 CLIP_CONF_THRESHOLD = 0.45
 
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
@@ -171,8 +172,12 @@ class EfficientNetClassifier:
         if clip_label is not None and clip_conf >= CLIP_CONF_THRESHOLD:
             return (clip_label, clip_conf, "clip_fallback") if return_confidence else clip_label
 
+        # No CLIP available — fall back to a relaxed local threshold rather than giving up
+        clip_unavailable = not self.clip_pipeline
+        if clip_unavailable and local_label is not None and local_conf >= LOCAL_NO_FALLBACK_THRESHOLD:
+            return (local_label, local_conf, "local") if return_confidence else local_label
+
         # Neither tier confident enough
         if local_label is not None:
-            # Surface the low-confidence local result for the caller to decide
             return (local_label, local_conf, "local_low_confidence") if return_confidence else local_label
         return ("Unrecognized", 0.0, "none") if return_confidence else "Unrecognized"

@@ -1,148 +1,84 @@
-import { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
-import { supabase } from '../supabaseClient';
+import { useState, useEffect } from 'react'
+import { SignIn, useClerk } from '@clerk/clerk-react'
+import { clerkAppearance } from '../config/clerkAppearance'
 
 function Login() {
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [message, setMessage] = useState({ type: '', text: '' });
-  const navigate = useNavigate();
+  const { loaded } = useClerk()
+  const [showContent, setShowContent] = useState(false)
 
-  const handleLogin = async (e) => {
-    e.preventDefault();
-    setLoading(true);
-    setMessage({ type: '', text: '' });
-
-    try {
-      const { error, data } = await supabase.auth.signInWithPassword({
-        email: email,
-        password: password
-      });
-
-      if (error) {
-        setMessage({ type: 'error', text: error.message || 'Login failed' });
-      } else {
-        setMessage({ type: 'success', text: 'Logged in successfully! Redirecting to dashboard...' });
-        setTimeout(() => navigate('/dashboard'), 2000);
-      }
-    } catch (error) {
-      setMessage({ type: 'error', text: error.message || 'Invalid email or password' });
-    } finally {
-      setLoading(false);
+  useEffect(() => {
+    if (loaded) {
+      const timer = setTimeout(() => setShowContent(true), 100)
+      return () => clearTimeout(timer)
     }
-  };
+  }, [loaded])
 
   return (
-    <div className="min-h-screen bg-surface flex">
-      {/* Left Side - Visual Narrative */}
-      <div className="hidden lg:flex lg:w-7/12 relative bg-surface-dim items-center justify-center p-12">
+    <div className="min-h-screen bg-surface flex page-transition">
+      <div className="hidden lg:flex lg:w-7/12 relative bg-surface-dim items-center justify-center p-12 overflow-hidden group">
         <div className="absolute inset-0 z-0">
           <img
             alt="Digital Conservatory"
-            className="w-full h-full object-cover"
-            src="https://lh3.googleusercontent.com/aida-public/AB6AXuB1nueEgLJHI53uu4fn4UOMb1oVewG9JXKAtPSbUy9lyiQWH8reKlGbwEdmirf3XfDGDMs4HPofxhGUMkh2A-7MuLEjsemE_1D9odxh-pylGS3PtZIg8uNe4kGW8-HTN6JQA1tqJ4mBly3-wJJfbqBwdD2Dgyi_ejEV30U7AmvudxsI4jcMozs101rLIEHyQ93xnQAftPluq67qUXIOs2ElDDFCp_5Rho8socwcneXpBxbB0IXN4QUeU-J9uDuzAghLrszGNOZFhJw"
+            className="w-full h-full object-cover img-zoom"
+            src="https://images.unsplash.com/photo-1532996122724-e3c354a0b15b?q=80&w=1470&auto=format&fit=crop"
           />
-          <div className="absolute inset-0 bg-gradient-to-tr from-surface/40 to-transparent"></div>
+          <div className="absolute inset-0 bg-gradient-to-tr from-surface/60 via-surface/20 to-transparent"></div>
         </div>
-        <div className="relative z-10 max-w-xl">
-          <div className="mb-8 inline-flex items-center px-4 py-2 rounded-full glass-panel border border-outline-variant/20 shadow-sm">
-            <span className="material-symbols-outlined text-primary mr-2" style="fontVariationSettings: 'FILL' 1;">spa</span>
+        <div className={`relative z-10 max-w-xl transition-all duration-700 ${showContent ? 'opacity-100 translate-x-0' : 'opacity-0 -translate-x-8'}`}>
+          <div className="mb-8 inline-flex items-center px-4 py-2 rounded-full glass-panel border border-outline-variant/20 shadow-sm hover:shadow-md transition-shadow duration-300">
+            <span className="material-symbols-outlined text-primary mr-2" style={{fontVariationSettings: "'FILL' 1"}}>spa</span>
             <span className="text-xs font-bold tracking-widest uppercase font-headline text-primary">Sustainability First</span>
           </div>
           <h1 className="font-display text-5xl md:text-6xl font-extrabold text-on-surface leading-tight mb-6">
             Preserving the <span className="text-primary">Ecosystem</span> through Digital Intelligence.
           </h1>
           <p className="text-on-surface-variant text-lg leading-relaxed max-w-lg">
-            Join E‑Waste Management in redefining electronic lifecycles. Our conservatory approach treats every component with clinical precision and ecological care.
+            Join E-Waste Management in redefining electronic lifecycles. Our conservatory approach treats every component with clinical precision and ecological care.
           </p>
         </div>
       </div>
 
-      {/* Right Side - Login Form */}
-      <div className="w-full lg:w-5/12 bg-surface-container-lowest flex flex-col justify-center px-8 md:px-16 lg:px-24">
-        <div className="max-w-md w-full mx-auto">
-          {/* Branding Header */}
-          <div className="mb-12">
-            <div className="flex items-center space-x-3 mb-10">
-              <div className="w-10 h-10 bg-primary rounded-xl flex items-center justify-center">
-                <span className="material-symbols-outlined text-on-primary text-2xl" style="fontVariationSettings: 'FILL' 1;">spa</span>
-              </div>
-              <span className="text-2xl font-bold font-headline tracking-tight text-on-surface">E‑Waste Management</span>
+      <div className="w-full lg:w-5/12 bg-surface-container-lowest flex flex-col justify-center px-6 sm:px-12 lg:px-20 relative">
+        <div className={`max-w-md w-full mx-auto transition-all duration-500 ${showContent ? 'opacity-0 scale-95 absolute pointer-events-none' : 'opacity-100 scale-100'}`}>
+          <div className="mb-8">
+            <div className="flex items-center space-x-3 mb-6">
+              <div className="w-10 h-10 bg-primary rounded-xl animate-pulse-slow"></div>
+              <div className="skeleton-loader h-8 w-48"></div>
             </div>
-            <h2 className="font-display text-3xl font-bold text-on-surface mb-2">
-              Login
-            </h2>
+            <div className="skeleton-loader h-6 w-32 mb-2"></div>
+            <div className="skeleton-loader h-4 w-56"></div>
+          </div>
+          <div className="space-y-4">
+            <div className="skeleton-loader h-12 rounded-xl"></div>
+            <div className="skeleton-loader h-12 rounded-xl"></div>
+            <div className="skeleton-loader h-12 rounded-xl"></div>
+          </div>
+        </div>
+
+        <div className={`max-w-md w-full mx-auto transition-all duration-600 ease-out ${showContent ? 'opacity-100 translate-y-0 scale-100' : 'opacity-0 translate-y-6 scale-95 absolute pointer-events-none'}`}>
+          <div className="mb-8 animate-fade-in-down">
+            <div className="flex items-center space-x-3 mb-6 group cursor-pointer">
+              <div className="w-10 h-10 bg-primary rounded-xl flex items-center justify-center transition-transform duration-300 group-hover:scale-110">
+                <span className="material-symbols-outlined text-on-primary text-2xl" style={{fontVariationSettings: "'FILL' 1"}}>spa</span>
+              </div>
+              <span className="text-2xl font-bold font-headline tracking-tight text-on-surface">E-Waste Management</span>
+            </div>
+            <h2 className="font-display text-3xl font-bold text-on-surface mb-2">Welcome Back</h2>
             <p className="text-on-surface-variant font-body">Access your Digital Conservatory dashboard.</p>
           </div>
 
-          {/* Message Display */}
-          {message.text && (
-            <div className={`mb-6 p-4 rounded-lg ${message.type === 'error' ? 'bg-error-container text-on-error-container' : 'bg-primary-container text-on-primary-container'}`}>
-              {message.text}
-            </div>
-          )}
-
-          {/* Login Form */}
-          <form onSubmit={handleLogin} className="space-y-6">
-            <div>
-              <label className="block text-sm font-semibold text-on-surface-variant mb-2 font-label" htmlFor="email">
-                Email address
-              </label>
-              <input
-                className="w-full bg-surface-container-low border-b-2 border-transparent border-b-outline-variant focus:border-b-primary focus:ring-0 transition-all px-0 py-3 text-on-surface placeholder:text-outline/50 font-body"
-                id="email"
-                name="email"
-                type="email"
-                placeholder="name@institution.org"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                required
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm font-semibold text-on-surface-variant mb-2 font-label" htmlFor="password">
-                Password
-              </label>
-              <input
-                className="w-full bg-surface-container-low border-b-2 border-transparent border-b-outline-variant focus:border-b-primary focus:ring-0 transition-all px-0 py-3 text-on-surface placeholder:text-outline/50 font-body"
-                id="password"
-                name="password"
-                type="password"
-                placeholder="••••••••"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-                minLength="6"
-              />
-            </div>
-
-            <div className="pt-4">
-              <button
-                type="submit"
-                disabled={loading}
-                className="w-full bg-primary hover:bg-primary-container text-on-primary font-bold py-4 rounded-xl shadow-lg shadow-primary/10 transition-all duration-200 flex items-center justify-center group disabled:opacity-50"
-              >
-                <span>{loading ? 'Logging in...' : 'Sign In'}</span>
-                {!loading && <span className="material-symbols-outlined ml-2 text-xl group-hover:translate-x-1 transition-transform">arrow_forward</span>}
-              </button>
-            </div>
-          </form>
-
-          {/* Footer Actions */}
-          <footer className="mt-10 text-center">
-            <p className="text-on-surface-variant font-body">
-              New to E‑Waste Management?<br/>
-              <Link to="/signup" className="text-primary font-bold hover:underline decoration-2 underline-offset-4 ml-1">
-                Create an account
-              </Link>
-            </p>
-          </footer>
+          <SignIn
+            routing="path"
+            path="/login"
+            signUpUrl="/signup"
+            forceRedirectUrl="/dashboard"
+            fallbackRedirectUrl="/dashboard"
+            appearance={clerkAppearance}
+          />
         </div>
       </div>
     </div>
-  );
+  )
 }
 
-export default Login;
+export default Login

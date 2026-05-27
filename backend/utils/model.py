@@ -108,8 +108,9 @@ class EfficientNetClassifier:
 
     def _ensure_clip(self):
         if self.clip_pipeline is None:
-            # Disabled by default on memory-constrained hosts (Render free tier OOMs on CLIP load).
-            if os.getenv("ENABLE_CLIP_FALLBACK", "0") != "1":
+            # CLIP fallback ~600MB; on by default, opt out on memory-constrained hosts
+            # by setting ENABLE_CLIP_FALLBACK=0 (e.g. Render free tier).
+            if os.getenv("ENABLE_CLIP_FALLBACK", "1") == "0":
                 self.clip_pipeline = False
                 return
             try:

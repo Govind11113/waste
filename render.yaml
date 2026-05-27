@@ -36,7 +36,7 @@ services:
     routes:
       - type: rewrite
         source: /api/*
-        destination: https://ewaste-backend.onrender.com/api/*
+        destination: https://ewaste-backend-ykwh.onrender.com/api/*
       - type: rewrite
         source: /*
         destination: /index.html

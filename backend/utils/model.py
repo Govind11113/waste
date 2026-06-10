@@ -1,183 +1,388 @@
 """
-Vision model wrapper with two-tier classification:
-  Tier 1: Local trained ResNet-50 model (10 IT-lab classes)
-  Tier 2: CLIP zero-shot fallback (broader e-waste coverage)
+E-Waste Image Classifier — 3-stage zero-shot pipeline
+=====================================================
+
+Stage 0: Image quality gate (reject blurry/dark/small images)
+Stage 1: Electronics gate (reject non-electronic images)
+Stage 2: Fine-grained device classification with confidence/margin rejection
+
+Default Model: google/siglip-base-patch16-224 (~350MB)
+- Better zero-shot accuracy than CLIP
+- Sigmoid-based loss (better calibration)
+- CPU-friendly
+
+Optional Models (set EWASTE_MODEL env var):
+- clip-base:       openai/clip-vit-base-patch32      (~1.1GB)
+- siglip-so400m:   google/siglip-so400m-patch14-384  (~900MB, best accuracy)
 """
 
 import os
-from pathlib import Path
-from typing import Tuple, Union
+from typing import Tuple, Optional, Dict, Any
+from functools import lru_cache
+import numpy as np
 
 import torch
-import torch.nn as nn
-import torchvision.models as tv_models
-import torchvision.transforms as T
-from PIL import Image
+from PIL import Image, ImageFilter
 
 
-LOCAL_CLASSES = [
-    "Motherboard", "Hard Disk / SSD", "Monitor", "Mouse",
-    "Keyboard", "Smartphone", "Computer", "Printer",
-    "Projector", "Router / Switch"
+# ── Model Configuration ──────────────────────────────────────────
+MODEL_PRESETS = {
+    "siglip-base": {
+        "model_id": "google/siglip-base-patch16-224",
+        "image_size": 224,
+        "memory_mb": 350,
+        "is_clip": False,
+    },
+    "clip-base": {
+        "model_id": "openai/clip-vit-base-patch32",
+        "image_size": 224,
+        "memory_mb": 1100,
+        "is_clip": True,
+    },
+    "siglip-so400m": {
+        "model_id": "google/siglip-so400m-patch14-384",
+        "image_size": 384,
+        "memory_mb": 900,
+        "is_clip": False,
+    },
+}
+
+DEFAULT_MODEL = os.getenv("EWASTE_MODEL", "siglip-base")
+MODEL_PRESET = MODEL_PRESETS.get(DEFAULT_MODEL, MODEL_PRESETS["siglip-base"])
+MODEL_ID = MODEL_PRESET["model_id"]
+IMAGE_SIZE = MODEL_PRESET["image_size"]
+IS_CLIP_MODEL = MODEL_PRESET["is_clip"]
+
+# Thresholds (SigLIP uses sigmoid, CLIP uses softmax — different calibration)
+if IS_CLIP_MODEL:
+    CLASSIFY_THRESHOLD = 0.30
+    CLASSIFY_LOW_THRESHOLD = 0.15
+    ELECTRONIC_THRESHOLD = 0.28
+    ELECTRONIC_MARGIN = 0.08
+    MARGIN_THRESHOLD = 0.07
+else:
+    CLASSIFY_THRESHOLD = 0.20
+    CLASSIFY_LOW_THRESHOLD = 0.10
+    ELECTRONIC_THRESHOLD = 0.18
+    ELECTRONIC_MARGIN = 0.05
+    MARGIN_THRESHOLD = 0.04
+
+
+# ── Canonical entity prompt groups ──────────────────────────────
+# Each entity has multiple aliases for more robust classification.
+# The model scores each alias and we take the max per entity.
+ENTITY_PROMPTS: Dict[str, list] = {
+    "Laptop":         ["laptop", "notebook computer", "portable computer"],
+    "Computer":       ["desktop computer", "personal computer", "computer tower", "PC"],
+    "Smartphone":     ["smartphone", "mobile phone", "cell phone", "phone"],
+    "Monitor":        ["computer monitor", "display screen", "desktop monitor", "computer display"],
+    "Keyboard":       ["computer keyboard", "mechanical keyboard", "typing keyboard"],
+    "Mouse":          ["computer mouse", "wired mouse", "wireless mouse"],
+    "Printer":        ["computer printer", "inkjet printer", "laser printer", "3D printer"],
+    "Projector":      ["projector", "video projector", "data projector"],
+    "Router / Switch":["wireless router", "network switch", "modem", "networking device"],
+    "Motherboard":    ["motherboard", "computer circuit board", "GPU graphics card", "RAM memory module"],
+    "Hard Disk / SSD":["hard disk drive", "solid state drive", "SSD", "HDD", "computer storage"],
+    "Air Conditioner":["air conditioner", "split AC", "window AC", "HVAC unit"],
+    "Television":     ["television", "TV set", "LED TV", "smart TV"],
+    "Microwave":      ["microwave oven", "microwave"],
+    "Camera":         ["digital camera", "DSLR camera", "webcam", "action camera"],
+    "Smartwatch":     ["smartwatch", "fitness tracker", "wearable device"],
+    "Battery":        ["lithium battery", "power bank", "portable charger"],
+}
+
+
+# ── Electronics gate prompts ─────────────────────────────────────
+POSITIVE_ELECTRONICS = [
+    "electronic device",
+    "consumer electronics",
+    "household appliance",
+    "computer accessory",
+    "phone or tablet",
+    "monitor or screen",
+    "computer component",
+    "IT equipment",
+    "digital device",
+    "battery or power supply",
 ]
 
-# CLIP fallback covers items not in the local model — AC, Microwave, etc.
-CLIP_LABELS = LOCAL_CLASSES + [
-    "Air Conditioner", "Microwave", "Television", "Camera", "Smartwatch", "Laptop"
+NEGATIVE_ELECTRONICS = [
+    "person",
+    "animal",
+    "food",
+    "plant",
+    "vehicle",
+    "clothing",
+    "furniture",
+    "paper document",
+    "toy",
+    "outdoor landscape",
+    "indoor room scene",
+    "book",
+    "building",
 ]
 
-LOCAL_CONF_THRESHOLD = 0.55
-LOCAL_NO_FALLBACK_THRESHOLD = 0.30
-CLIP_CONF_THRESHOLD = 0.45
+# Pre-computed sets for O(1) lookup (rebuilt once at import, not per request)
+_POS_SET = frozenset(p.lower() for p in POSITIVE_ELECTRONICS)
+_NEG_SET = frozenset(p.lower() for p in NEGATIVE_ELECTRONICS)
 
-IMAGENET_MEAN = [0.485, 0.456, 0.406]
-IMAGENET_STD = [0.229, 0.224, 0.225]
+# Pre-built prompt list + entity map for classify_device (computed once)
+_ALL_CLASSIFY_PROMPTS: list = []
+_PROMPT_ENTITY_MAP: Dict[str, str] = {}
+for _entity, _aliases in ENTITY_PROMPTS.items():
+    for _alias in _aliases:
+        _prompt = f"a photo of a {_alias}, electronic device" if IS_CLIP_MODEL else _alias
+        _PROMPT_ENTITY_MAP[_prompt] = _entity
+        _ALL_CLASSIFY_PROMPTS.append(_prompt)
 
 
-class EWasteCNN(nn.Module):
-    """ResNet-50 backbone (bb) with a 2-layer classifier head matching the saved checkpoint."""
+# ── Model loading ────────────────────────────────────────────────
+@lru_cache(maxsize=1)
+def _load_model():
+    """Lazy-load the zero-shot image classification model."""
+    try:
+        from transformers import pipeline as hf_pipeline
 
-    def __init__(self, num_classes: int = 10, dropout: float = 0.6):
-        super().__init__()
-        self.bb = tv_models.resnet50(weights=None)
-        # The saved checkpoint replaces bb.fc with: Dropout → Linear(2048,512) → ReLU → Dropout → Linear(512, num_classes)
-        in_features = self.bb.fc.in_features  # 2048
-        self.bb.fc = nn.Sequential(
-            nn.Dropout(dropout),
-            nn.Linear(in_features, 512),
-            nn.ReLU(inplace=True),
-            nn.Dropout(dropout),
-            nn.Linear(512, num_classes),
+        print(f"[model] Loading: {MODEL_ID}")
+        print(f"[model] Type: {'CLIP' if IS_CLIP_MODEL else 'SigLIP'}")
+        print(f"[model] Image size: {IMAGE_SIZE}x{IMAGE_SIZE}")
+
+        device = 0 if torch.cuda.is_available() else -1
+
+        classifier = hf_pipeline(
+            "zero-shot-image-classification",
+            model=MODEL_ID,
+            device=device,
         )
 
-    def forward(self, x):
-        return self.bb(x)
+        print(f"[model] Loaded on {'GPU' if device == 0 else 'CPU'}")
+        return classifier
+
+    except Exception as e:
+        print(f"[model] Failed to load {MODEL_ID}: {e}")
+        raise
 
 
-class EfficientNetClassifier:
-    """Two-tier classifier: local ResNet-50 first, CLIP zero-shot fallback for broader coverage."""
+# ── Stage 0: Image quality gate ──────────────────────────────────
+def assess_image_quality(image: Image.Image) -> dict:
+    """
+    Check image quality before classification.
+    Returns dict with 'ok' bool and 'reason' str if rejected.
+    """
+    w, h = image.size
 
-    def __init__(self, model_path: str = None, device: str = "auto"):
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # Minimum size check
+    if min(w, h) < 160:
+        return {"ok": False, "reason": "image_too_small"}
 
-        # Resolve checkpoint path
-        if model_path is None:
-            here = Path(__file__).resolve().parent
-            model_path = str(here.parent / "models" / "latest" / "model_final.pth")
-        self.model_path = model_path
+    # Convert to grayscale for analysis
+    gray = image.convert("L")
+    pixels = np.array(gray, dtype=np.float64)
 
-        self.preprocess = T.Compose([
-            T.Resize(256),
-            T.CenterCrop(224),
-            T.ToTensor(),
-            T.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
-        ])
+    # Brightness check
+    brightness = pixels.mean()
+    if brightness < 30:
+        return {"ok": False, "reason": "image_too_dark"}
 
-        self.local_model = None
-        self.local_classes = LOCAL_CLASSES
-        self._load_local_model()
+    # Contrast check
+    contrast = pixels.std()
+    if contrast < 18:
+        return {"ok": False, "reason": "image_low_contrast"}
 
-        self.clip_pipeline = None  # Lazy-initialized on first fallback use
+    # Blur check via Laplacian variance (edge detection)
+    edges = gray.filter(ImageFilter.FIND_EDGES)
+    edge_pixels = np.array(edges, dtype=np.float64)
+    blur_score = edge_pixels.var()
+    if blur_score < 45:
+        return {"ok": False, "reason": "image_too_blurry"}
 
-    def _load_local_model(self):
-        if not os.path.exists(self.model_path):
-            print(f"Trained model not found at {self.model_path} — fallback only")
-            return
-        try:
-            ckpt = torch.load(self.model_path, map_location="cpu", weights_only=False)
-            if isinstance(ckpt, dict) and "model_state_dict" in ckpt:
-                state_dict = ckpt["model_state_dict"]
-                config = ckpt.get("config", {})
-                num_classes = config.get("num_classes", 10)
-                dropout = config.get("dropout", 0.6)
-                if "classes" in ckpt and isinstance(ckpt["classes"], list):
-                    self.local_classes = ckpt["classes"]
-            else:
-                state_dict = ckpt
-                num_classes = 10
-                dropout = 0.6
+    return {"ok": True, "reason": None}
 
-            model = EWasteCNN(num_classes=num_classes, dropout=dropout)
-            model.load_state_dict(state_dict, strict=False)
-            model.eval()
-            model.to(self.device)
-            self.local_model = model
-            print(f"Loaded trained ResNet from {self.model_path}")
-        except Exception as e:
-            print(f"Failed to load local trained model: {e}")
-            self.local_model = None
 
-    def _ensure_clip(self):
-        if self.clip_pipeline is None:
-            # CLIP fallback ~600MB; on by default, opt out on memory-constrained hosts
-            # by setting ENABLE_CLIP_FALLBACK=0 (e.g. Render free tier).
-            if os.getenv("ENABLE_CLIP_FALLBACK", "1") == "0":
-                self.clip_pipeline = False
-                return
-            try:
-                from transformers import pipeline
-                dev_id = 0 if torch.cuda.is_available() else -1
-                self.clip_pipeline = pipeline(
-                    "zero-shot-image-classification",
-                    model="openai/clip-vit-base-patch32",
-                    device=dev_id,
-                )
-                print("Initialized CLIP fallback pipeline")
-            except Exception as e:
-                print(f"CLIP fallback unavailable: {e}")
-                self.clip_pipeline = False  # Sentinel for "tried and failed"
+# ── Stage 1: Electronics gate ────────────────────────────────────
+def gate_electronics(image: Image.Image) -> dict:
+    """
+    Broad zero-shot check: is this image an electronic device?
+    Returns dict with 'is_electronic', 'electronic_score', 'non_electronic_score'.
+    """
+    classifier = _load_model()
 
-    def _predict_local(self, image: Image.Image) -> Tuple[str, float]:
-        if self.local_model is None:
-            return None, 0.0
-        try:
-            tensor = self.preprocess(image).unsqueeze(0).to(self.device)
-            with torch.no_grad():
-                logits = self.local_model(tensor)
-                probs = torch.softmax(logits, dim=1)
-                conf, idx = probs.max(dim=1)
-            label = self.local_classes[idx.item()]
-            return label, float(conf.item())
-        except Exception as e:
-            print(f"Local model inference failed: {e}")
-            return None, 0.0
+    try:
+        # Combine positive + negative prompts for a single pass
+        all_prompts = POSITIVE_ELECTRONICS + NEGATIVE_ELECTRONICS
 
-    def _predict_clip(self, image: Image.Image) -> Tuple[str, float]:
-        self._ensure_clip()
-        if not self.clip_pipeline:
-            return None, 0.0
-        try:
-            results = self.clip_pipeline(image, candidate_labels=CLIP_LABELS)
-            best = results[0]
-            return best["label"], float(best["score"])
-        except Exception as e:
-            print(f"CLIP inference failed: {e}")
-            return None, 0.0
+        if IS_CLIP_MODEL:
+            all_prompts_formatted = [
+                f"a photo of {p}" if not p.startswith("a ") else p
+                for p in all_prompts
+            ]
+        else:
+            all_prompts_formatted = all_prompts
 
-    def predict(self, image: Image.Image, return_confidence: bool = True):
+        results = classifier(
+            image,
+            candidate_labels=all_prompts_formatted,
+            multi_label=True,
+        )
+
+        # Separate scores using pre-computed frozensets
+        pos_scores = []
+        neg_scores = []
+        for r in results:
+            label = r["label"].strip().lower()
+            score = float(r["score"])
+            if label in _POS_SET:
+                pos_scores.append(score)
+            elif label in _NEG_SET:
+                neg_scores.append(score)
+
+        electronic_score = max(pos_scores) if pos_scores else 0.0
+        non_electronic_score = max(neg_scores) if neg_scores else 0.0
+        margin = electronic_score - non_electronic_score
+
+        is_electronic = (
+            electronic_score >= ELECTRONIC_THRESHOLD
+            and margin >= ELECTRONIC_MARGIN
+        )
+
+        return {
+            "is_electronic": is_electronic,
+            "electronic_score": round(electronic_score, 4),
+            "non_electronic_score": round(non_electronic_score, 4),
+            "margin": round(margin, 4),
+        }
+
+    except Exception as e:
+        print(f"[model] Electronics gate failed: {e}")
+        # On error, allow classification to proceed (fail open)
+        return {"is_electronic": True, "electronic_score": 0.5, "non_electronic_score": 0.0, "margin": 0.5}
+
+
+# ── Stage 2: Fine-grained device classification ──────────────────
+def classify_device(image: Image.Image) -> dict:
+    """
+    Classify into a specific electronic device category.
+    Batches ALL aliases into a single model call for speed.
+    Returns dict with 'entity', 'confidence', 'top2_entity', 'top2_confidence', 'model_used'.
+    """
+    classifier = _load_model()
+
+    try:
+        # Use pre-built prompt list + O(1) entity lookup (computed once at module import)
+        results = classifier(
+            image,
+            candidate_labels=_ALL_CLASSIFY_PROMPTS,
+            multi_label=False,
+        )
+
+        if not results:
+            return {"entity": "Unrecognized", "confidence": 0.0, "top2_entity": None, "top2_confidence": 0.0, "model_used": "none"}
+
+        # Aggregate scores by canonical entity (take max across aliases)
+        entity_scores: Dict[str, float] = {}
+        for r in results:
+            prompt_label = r["label"].strip()
+            score = float(r["score"])
+            entity = _PROMPT_ENTITY_MAP.get(prompt_label)
+            if entity:
+                if entity not in entity_scores or score > entity_scores[entity]:
+                    entity_scores[entity] = score
+
+        if not entity_scores:
+            return {"entity": "Unrecognized", "confidence": 0.0, "top2_entity": None, "top2_confidence": 0.0, "model_used": "none"}
+
+        # Sort by score
+        sorted_entities = sorted(entity_scores.items(), key=lambda x: x[1], reverse=True)
+        top1_entity, top1_score = sorted_entities[0]
+        top2_entity = sorted_entities[1][0] if len(sorted_entities) > 1 else None
+        top2_score = sorted_entities[1][1] if len(sorted_entities) > 1 else 0.0
+
+        model_used = "clip" if IS_CLIP_MODEL else "siglip"
+        margin = top1_score - top2_score
+
+        # Apply confidence + margin thresholds
+        if top1_score < CLASSIFY_THRESHOLD:
+            return {
+                "entity": "Unrecognized",
+                "confidence": round(top1_score, 4),
+                "top2_entity": top2_entity,
+                "top2_confidence": round(top2_score, 4),
+                "model_used": f"{model_used}_low_confidence",
+            }
+
+        if margin < MARGIN_THRESHOLD:
+            return {
+                "entity": "Unrecognized",
+                "confidence": round(top1_score, 4),
+                "top2_entity": top2_entity,
+                "top2_confidence": round(top2_score, 4),
+                "model_used": f"{model_used}_ambiguous",
+            }
+
+        return {
+            "entity": top1_entity,
+            "confidence": round(top1_score, 4),
+            "top2_entity": top2_entity,
+            "top2_confidence": round(top2_score, 4),
+            "model_used": model_used,
+        }
+
+    except Exception as e:
+        print(f"[model] Device classification failed: {e}")
+        return {"entity": "Unrecognized", "confidence": 0.0, "top2_entity": None, "top2_confidence": 0.0, "model_used": "error"}
+
+
+# ── Main classifier class ────────────────────────────────────────
+class EWasteClassifier:
+    """
+    3-stage e-waste image classifier:
+      Stage 0: Image quality gate
+      Stage 1: Electronics gate (reject non-electronic images)
+      Stage 2: Fine-grained device classification with rejection
+    """
+
+    def __init__(self):
+        self._classifier = None
+
+    def _ensure_loaded(self):
+        """Ensure the model is loaded (lazy initialization)."""
+        if self._classifier is None:
+            self._classifier = _load_model()
+
+    def predict(self, image: Image.Image, return_confidence: bool = True) -> Tuple[str, float, str]:
         """
-        Returns (label, confidence, model_used) when return_confidence=True.
-        model_used ∈ {"local", "clip_fallback", "none"}
+        Classify an electronic device from an image through the 3-stage pipeline.
+
+        Returns:
+            If return_confidence=True: (label, confidence, model_used)
+            If return_confidence=False: label only
         """
         if image.mode != "RGB":
             image = image.convert("RGB")
 
-        # Tier 1: local trained model
-        local_label, local_conf = self._predict_local(image)
-        if local_label is not None and local_conf >= LOCAL_CONF_THRESHOLD:
-            return (local_label, local_conf, "local") if return_confidence else local_label
+        self._ensure_loaded()
 
-        # Tier 2: CLIP fallback for broader coverage
-        clip_label, clip_conf = self._predict_clip(image)
-        if clip_label is not None and clip_conf >= CLIP_CONF_THRESHOLD:
-            return (clip_label, clip_conf, "clip_fallback") if return_confidence else clip_label
+        # ── Stage 0: Quality gate ──
+        quality = assess_image_quality(image)
+        if not quality["ok"]:
+            reason = quality["reason"]
+            return ("Unrecognized", 0.0, f"rejected_{reason}") if return_confidence else "Unrecognized"
 
-        # No CLIP available — fall back to a relaxed local threshold rather than giving up
-        clip_unavailable = not self.clip_pipeline
-        if clip_unavailable and local_label is not None and local_conf >= LOCAL_NO_FALLBACK_THRESHOLD:
-            return (local_label, local_conf, "local") if return_confidence else local_label
+        # ── Stage 1: Electronics gate ──
+        gate = gate_electronics(image)
+        if not gate["is_electronic"]:
+            return ("Unrecognized", gate["electronic_score"], "rejected_non_electronic") if return_confidence else "Unrecognized"
 
-        # Neither tier confident enough
-        if local_label is not None:
-            return (local_label, local_conf, "local_low_confidence") if return_confidence else local_label
-        return ("Unrecognized", 0.0, "none") if return_confidence else "Unrecognized"
+        # ── Stage 2: Fine-grained device classification ──
+        result = classify_device(image)
+        entity = result["entity"]
+        confidence = result["confidence"]
+        model_used = result["model_used"]
+
+        if return_confidence:
+            return (entity, confidence, model_used)
+        return entity
+
+
+# Module-level instance for easy import
+classifier = EWasteClassifier()

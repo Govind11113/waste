@@ -107,10 +107,12 @@ function Scanner() {
     const hazardColor = result.hazard_level === 'Hazardous' ? '#ba1a1a' : '#486730'
     const conditionLabel = result.condition.charAt(0).toUpperCase() + result.condition.slice(1)
     const modelLabel = result.model_used === 'local'
-      ? 'Local trained ResNet-50 (10-class)'
-      : result.model_used === 'clip_fallback'
-        ? 'CLIP Zero-Shot Fallback'
-        : 'Hybrid'
+      ? 'CLIP Zero-Shot Classification'
+      : result.model_used === 'siglip'
+        ? 'SigLIP Zero-Shot Classification'
+        : result.model_used?.includes('low_confidence')
+          ? 'Zero-Shot (Low Confidence)'
+          : 'Zero-Shot Classification'
 
     const element = document.createElement('div')
     element.innerHTML = `
@@ -215,7 +217,7 @@ function Scanner() {
     <div className="pt-32 pb-20 px-8 max-w-7xl mx-auto page-transition">
       <header className="mb-12 animate-fade-in-down">
         <h1 className="text-5xl font-extrabold text-on-surface tracking-tight mb-4">E-Waste Classifier</h1>
-        <p className="text-xl text-on-surface-variant max-w-2xl">Upload device images for instant classification using a trained ResNet-50 model with a CLIP zero-shot fallback for broader coverage.</p>
+        <p className="text-xl text-on-surface-variant max-w-2xl">Upload device images for instant classification using CLIP/SigLIP zero-shot vision models — no training required.</p>
       </header>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
@@ -340,7 +342,7 @@ function Scanner() {
                 <span className="material-symbols-outlined text-5xl text-primary animate-spin">analytics</span>
                 <div className="text-center">
                   <p className="text-lg font-semibold text-on-surface">Analyzing image...</p>
-                  <p className="text-sm text-on-surface-variant mt-1">Running ResNet-50 inference</p>
+                  <p className="text-sm text-on-surface-variant mt-1">Running zero-shot image classification</p>
                 </div>
                 <div className="w-full bg-surface-container rounded-full h-2 overflow-hidden mt-4">
                   <div className="bg-primary h-2 rounded-full animate-pulse" style={{width: '75%', transition: 'width 2s ease'}}></div>
@@ -355,20 +357,40 @@ function Scanner() {
             <div className="bg-error-container/40 border-2 border-error/30 p-8 rounded-xl animate-scale-in-bounce card-shadow">
               <div className="flex items-start gap-4">
                 <div className="w-14 h-14 rounded-xl bg-error/10 flex items-center justify-center shrink-0">
-                  <span className="material-symbols-outlined text-error text-3xl">image_not_supported</span>
+                  <span className="material-symbols-outlined text-error text-3xl">
+                    {result.rejection_reason === 'non_electronic' ? 'not_interested' : 'image_not_supported'}
+                  </span>
                 </div>
                 <div className="flex-1">
-                  <h3 className="text-xl font-bold text-on-surface mb-2">Image Not Recognized</h3>
+                  <h3 className="text-xl font-bold text-on-surface mb-2">
+                    {result.rejection_reason === 'non_electronic' ? 'Not an Electronic Device' : 'Image Not Recognized'}
+                  </h3>
                   <p className="text-on-surface-variant mb-4 leading-relaxed">
-                    The classifier couldn't confidently identify the device in this image. This usually happens when the image is blurry, the device isn't fully visible, or the item isn't covered by our model.
+                    {result.condition || "The classifier couldn't confidently identify the device in this image."}
                   </p>
                   <div className="bg-surface-container-lowest rounded-lg p-4 space-y-2">
-                    <p className="text-sm font-semibold text-on-surface">Tips for a better scan:</p>
+                    <p className="text-sm font-semibold text-on-surface">
+                      {result.rejection_reason === 'non_electronic'
+                        ? 'What to upload:'
+                        : 'Tips for a better scan:'}
+                    </p>
                     <ul className="text-sm text-on-surface-variant space-y-1.5 list-disc pl-5">
-                      <li>Use a well-lit environment</li>
-                      <li>Make sure the device fills most of the frame</li>
-                      <li>Avoid blurry or partial shots</li>
-                      <li>Use a plain, contrasting background</li>
+                      {result.rejection_reason === 'non_electronic' ? (
+                        <>
+                          <li>Laptops, desktops, or tablets</li>
+                          <li>Phones, smartwatches, or earbuds</li>
+                          <li>Monitors, keyboards, or mice</li>
+                          <li>Printers, projectors, or routers</li>
+                          <li>ACs, TVs, microwaves, or cameras</li>
+                        </>
+                      ) : (
+                        <>
+                          <li>Use a well-lit environment</li>
+                          <li>Make sure the device fills most of the frame</li>
+                          <li>Avoid blurry or partial shots</li>
+                          <li>Use a plain, contrasting background</li>
+                        </>
+                      )}
                     </ul>
                   </div>
                 </div>
@@ -467,35 +489,34 @@ function Scanner() {
                 </span>
               ))}
             </div>
-            <p className="text-xs text-outline mt-3">First 10 are recognized by our trained model. The rest use a CLIP zero-shot fallback.</p>
+            <p className="text-xs text-outline mt-3">All categories classified via SigLIP zero-shot vision model — no training required.</p>
           </div>
 
           <div className="bg-surface-container-low p-6 rounded-xl hover-lift card-shadow">
-            <h3 className="text-lg font-bold text-on-surface mb-4">How It Works</h3>
-            <div className="space-y-3">
+            <h3 className="text-lg font-bold text-on-surface mb-4">How It Works</h3>              <div className="space-y-3">
               <div className="flex items-start gap-3">
                 <div className="w-7 h-7 rounded-full bg-primary/10 flex items-center justify-center shrink-0 mt-0.5">
                   <span className="text-xs font-bold text-primary">1</span>
                 </div>
-                <p className="text-sm text-on-surface-variant">Upload a clear image of the electronic device</p>
+                <p className="text-sm text-on-surface-variant">Upload a clear photo of the electronic device</p>
               </div>
               <div className="flex items-start gap-3">
                 <div className="w-7 h-7 rounded-full bg-primary/10 flex items-center justify-center shrink-0 mt-0.5">
                   <span className="text-xs font-bold text-primary">2</span>
                 </div>
-                <p className="text-sm text-on-surface-variant">Trained ResNet-50 classifies into 10 IT-lab categories; CLIP fallback for broader items</p>
+                <p className="text-sm text-on-surface-variant">3-stage pipeline: quality check → electronics gate → device classification</p>
               </div>
               <div className="flex items-start gap-3">
                 <div className="w-7 h-7 rounded-full bg-primary/10 flex items-center justify-center shrink-0 mt-0.5">
                   <span className="text-xs font-bold text-primary">3</span>
                 </div>
-                <p className="text-sm text-on-surface-variant">Get hazard level, condition, CO₂ impact, and disposal recommendation</p>
+                <p className="text-sm text-on-surface-variant">Non-electronic images and poor quality photos are automatically rejected</p>
               </div>
               <div className="flex items-start gap-3">
                 <div className="w-7 h-7 rounded-full bg-primary/10 flex items-center justify-center shrink-0 mt-0.5">
                   <span className="text-xs font-bold text-primary">4</span>
                 </div>
-                <p className="text-sm text-on-surface-variant">Download a detailed PDF report for compliance records</p>
+                <p className="text-sm text-on-surface-variant">Get device details, hazard level, CO₂ impact, and disposal recommendation</p>
               </div>
             </div>
           </div>

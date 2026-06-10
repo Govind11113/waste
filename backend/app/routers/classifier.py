@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from PIL import Image
 
 from app.db import log_scan
-from utils.model import EfficientNetClassifier
+from utils.model import EWasteClassifier, classifier
 
 router = APIRouter(prefix="/classifier", tags=["Classifier"])
 
@@ -20,10 +20,11 @@ _model_load_failed = False
 
 
 def get_model():
+    """Get or initialize the e-waste classifier model."""
     global _model, _model_load_failed
     if _model is None and not _model_load_failed:
         try:
-            _model = EfficientNetClassifier()
+            _model = EWasteClassifier()
         except Exception as e:
             print(f"Failed to load model: {e}")
             _model_load_failed = True
@@ -56,7 +57,15 @@ CO2_PROFILES = {
     "Laptop": {"manufacturing": 200, "annual": 50, "recycling": 18},
 }
 
-E_WASTE_HAZARD = ["Motherboard", "Smartphone", "Computer", "Printer", "Monitor", "Television", "Air Conditioner"]
+# All e-waste devices contain hazardous components under E-Waste (Management) Rules, 2022.
+# Lead (solder/PCBs), Mercury (CCFL backlights), Cadmium (batteries/chips),
+# Lithium (batteries — fire hazard), Brominated Flame Retardants (plastics).
+E_WASTE_HAZARD = [
+    "Motherboard", "Smartphone", "Computer", "Printer", "Monitor",
+    "Television", "Air Conditioner", "Laptop", "Hard Disk / SSD",
+    "Keyboard", "Mouse", "Projector", "Router / Switch",
+    "Microwave", "Camera", "Smartwatch", "Battery",
+]
 
 # Recyclability tier per device — High = standard e-waste recycling recovers most materials.
 # Medium = needs specialized handling (refrigerants, toner, lamps). Low = limited recovery (burnt/composite).
@@ -78,6 +87,84 @@ RECYCLABILITY = {
     "Smartwatch": "High",
     "Laptop": "High",
 }
+
+# ── Map expanded zero-shot model labels → canonical CO2_PROFILES entity ───
+LABEL_TO_ENTITY = {
+    # Computing
+    "laptop": "Laptop",
+    "desktop computer": "Computer",
+    "computer": "Computer",
+    "motherboard": "Motherboard",
+    "computer processor": "Motherboard",
+    "ram module": "Motherboard",
+    "graphics card": "Motherboard",
+    "solid state drive": "Hard Disk / SSD",
+    "hard disk drive": "Hard Disk / SSD",
+    "hdd": "Hard Disk / SSD",
+    "ssd": "Hard Disk / SSD",
+    # Peripherals
+    "computer mouse": "Mouse",
+    "mouse": "Mouse",
+    "mechanical keyboard": "Keyboard",
+    "keyboard": "Keyboard",
+    "computer monitor": "Monitor",
+    "monitor": "Monitor",
+    "display": "Monitor",
+    "computer printer": "Printer",
+    "printer": "Printer",
+    "3d printer": "Printer",
+    "computer projector": "Projector",
+    "projector": "Projector",
+    "webcam": "Camera",
+    "computer speakers": "Smartwatch",
+    "headphones": "Smartwatch",
+    "computer headset": "Smartwatch",
+    # Networking
+    "wireless router": "Router / Switch",
+    "router": "Router / Switch",
+    "network switch": "Router / Switch",
+    "modem": "Router / Switch",
+    "network cable": "Router / Switch",
+    # Mobile & Wearables
+    "smartphone": "Smartphone",
+    "mobile phone": "Smartphone",
+    "phone": "Smartphone",
+    "tablet": "Smartphone",
+    "smartwatch": "Smartwatch",
+    "fitness tracker": "Smartwatch",
+    "wireless earbuds": "Smartwatch",
+    "bluetooth earbuds": "Smartwatch",
+    "earbuds": "Smartwatch",
+    # Home Electronics
+    "television": "Television",
+    "led tv": "Television",
+    "smart tv": "Television",
+    "tv": "Television",
+    "microwave oven": "Microwave",
+    "microwave": "Microwave",
+    "air conditioner": "Air Conditioner",
+    "ac": "Air Conditioner",
+    "washing machine": "Air Conditioner",
+    "refrigerator": "Air Conditioner",
+    "camera": "Camera",
+    "digital camera": "Camera",
+    "dslr camera": "Camera",
+    "action camera": "Camera",
+    # Power & Accessories
+    "power bank": "Smartphone",
+    "portable charger": "Smartphone",
+    "battery pack": "Smartphone",
+    "lithium battery": "Smartphone",
+    "usb cable": "Router / Switch",
+    "power adapter": "Router / Switch",
+    "extension cord": "Router / Switch",
+    "power strip": "Router / Switch",
+    # Components
+    "circuit board": "Motherboard",
+    "electronic cable": "Router / Switch",
+    "hdmi cable": "Router / Switch",
+}
+
 
 CACHE_MAX_SIZE = 500
 
@@ -118,6 +205,7 @@ class ScanResponse(BaseModel):
     processing_time: float
     model_used: str
     disposal_advice: str
+    rejection_reason: Optional[str] = None
 
 
 def detect_condition(image: Image.Image) -> str:
@@ -156,10 +244,7 @@ def get_disposal_advice(entity: str, hazard_level: str, condition: str, recyclab
     else:
         recover = " Material recovery is limited; ensure hazardous components are isolated."
 
-    if hazard_level == "Hazardous":
-        base = f"This {entity} contains hazardous components. Hand it over to a certified e-waste recycler authorized under E-Waste (Management) Rules, 2022."
-    else:
-        base = f"This {entity} is non-hazardous but should still go through standard e-waste recycling channels for material recovery."
+    base = f"This {entity} contains hazardous components (lead, mercury, cadmium, lithium, or flame retardants). Hand it over to a certified e-waste recycler authorized under E-Waste (Management) Rules, 2022."
 
     if condition == "burnt":
         return base + recover + " Note: The device appears burnt — handle with care during transport."
@@ -172,7 +257,6 @@ def real_classification(contents: bytes, filename: str) -> dict:
     model = get_model()
 
     if model is None:
-        # Server-side simulation only when the model truly failed to load
         return {
             "entity": "Unrecognized",
             "group": "Unknown",
@@ -182,31 +266,48 @@ def real_classification(contents: bytes, filename: str) -> dict:
             "hazard_level": "Unknown",
             "co2_delta": 0.0,
             "model_used": "none",
+            "rejection_reason": "model_unavailable",
         }
 
     try:
         image = Image.open(io.BytesIO(contents))
         entity, confidence, model_used = model.predict(image, return_confidence=True)
 
-        # Normalize entity casing against known profiles
+        # Handle 3-stage pipeline rejections
+        if entity == "Unrecognized" or model_used.startswith("rejected_"):
+            rejection_messages = {
+                "rejected_image_too_small": "Image is too small to analyze. Please upload a larger photo.",
+                "rejected_image_too_dark": "Image is too dark. Please upload a brighter photo.",
+                "rejected_image_too_blurry": "Image is too blurry. Please upload a clearer photo.",
+                "rejected_image_low_contrast": "Image has very low contrast. Please upload a clearer photo.",
+                "rejected_non_electronic": "This image does not appear to contain an electronic device or e-waste item.",
+                "siglip_low_confidence": "Could not identify the device with enough confidence. Please upload a clearer photo of the device.",
+                "siglip_ambiguous": "The image is ambiguous — could not confidently determine the device type. Please try a different angle.",
+                "clip_low_confidence": "Could not identify the device with enough confidence. Please upload a clearer photo of the device.",
+                "clip_ambiguous": "The image is ambiguous — could not confidently determine the device type. Please try a different angle.",
+                "none": "Image could not be processed. Please upload a valid image.",
+                "error": "An error occurred during classification. Please try again.",
+            }
+            rejection_reason = model_used.replace("rejected_", "") if model_used.startswith("rejected_") else model_used
+            return {
+                "entity": "Unrecognized",
+                "group": "Unknown",
+                "condition": rejection_messages.get(model_used, "Image could not be classified."),
+                "confidence": round(float(confidence), 3),
+                "waste_status": "Unknown",
+                "hazard_level": "Unknown",
+                "co2_delta": 0.0,
+                "model_used": model_used,
+                "rejection_reason": rejection_reason,
+            }
+
+        # Successful classification — normalize entity
+        entity = LABEL_TO_ENTITY.get(entity.lower(), entity)
         entity_map = {k.lower(): k for k in CO2_PROFILES.keys()}
         normalized_entity = entity_map.get(entity.lower(), entity)
 
         condition = detect_condition(image)
         confidence = round(float(confidence), 3)
-
-        # Low-confidence path — surface "please upload clearer image"
-        if model_used == "none" or model_used == "local_low_confidence":
-            return {
-                "entity": "Unrecognized",
-                "group": "Unknown",
-                "condition": "please upload image correctly",
-                "confidence": confidence,
-                "waste_status": "Unknown",
-                "hazard_level": "Unknown",
-                "co2_delta": 0.0,
-                "model_used": model_used,
-            }
 
         co2_profile = CO2_PROFILES.get(normalized_entity, {"recycling": 10})
         co2_delta = co2_profile.get("recycling", 10)
@@ -216,25 +317,27 @@ def real_classification(contents: bytes, filename: str) -> dict:
 
         return {
             "entity": normalized_entity,
-            "group": "ICT Equipment" if model_used == "local" else "Electronics",
+            "group": "Electronics",
             "condition": condition,
             "confidence": confidence,
             "waste_status": waste_status,
             "hazard_level": hazard_level,
             "co2_delta": co2_delta,
             "model_used": model_used,
+            "rejection_reason": None,
         }
     except Exception as e:
         print(f"Model prediction failed: {e}")
         return {
             "entity": "Unrecognized",
             "group": "Unknown",
-            "condition": "inference error",
+            "condition": "An error occurred during classification.",
             "confidence": 0.0,
             "waste_status": "Unknown",
             "hazard_level": "Unknown",
             "co2_delta": 0.0,
             "model_used": "error",
+            "rejection_reason": "error",
         }
 
 
@@ -285,6 +388,7 @@ def scan_image(file: UploadFile = File(...)):
         "processing_time": round(time.time() - start_time, 3),
         "model_used": cls["model_used"],
         "disposal_advice": advice,
+        "rejection_reason": cls.get("rejection_reason"),
     }
 
     cache.set_item(file_hash, result.copy())

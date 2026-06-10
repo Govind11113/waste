@@ -1,44 +1,35 @@
-import torch
-import torchvision.models as models
-import torch.nn as nn
-import os
+"""
+DEPRECATED: This script is no longer needed.
+
+The e-waste classifier now uses Google's SigLIP-So400M model for zero-shot classification,
+which works out of the box without requiring any local model training or generation.
+
+The model is automatically downloaded and cached on first use from Hugging Face:
+  https://huggingface.co/google/siglip-so400m-patch14-384
+
+For reference, this script previously generated an untrained ResNet-50 model that was
+never actually used for classification (the system always fell through to the zero-shot fallback).
+
+The new implementation is in:
+  backend/utils/model.py
+
+To use the classifier, simply:
+  1. Install dependencies: pip install -r requirements.txt
+  2. Start the backend: uvicorn app.main:app --host 0.0.0.0 --port 8001
+  3. The model will be downloaded automatically on first /scan request
+"""
+
 import sys
 
-# Add backend directory to path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
-from backend.utils.model import EWasteCNN
 
 def generate_local_model():
-    print("🚀 Generating Pre-Trained IT Lab Classifier...")
-    
-    # 1. Instantiate our exact model class
-    model = EWasteCNN(num_classes=10, pretrained=True, dropout=0.6)
-    
-    # 3. Define the classes (Targeted IT Lab Equipment)
-    classes = {
-        0: "Motherboard",
-        1: "Hard Disk / SSD",
-        2: "Monitor",
-        3: "Mouse",
-        4: "Keyboard",
-        5: "Smartphone",
-        6: "Computer",
-        7: "Printer",
-        8: "Projector",
-        9: "Router / Switch"
-    }
-    
-    # 4. Save in the format expected by our backend
-    output_path = "backend/models/latest/model_final.pth"
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    
-    torch.save({
-        'model_state_dict': model.state_dict(),
-        'classes': classes,
-        'config': {'num_classes': 10, 'dropout': 0.6}
-    }, output_path)
-    
-    print(f"✅ Success! Generated 10-Class IT Lab Model at {output_path}")
+    print("DEPRECATED: This script is no longer needed.")
+    print("The e-waste classifier now uses Google's SigLIP-So400M for zero-shot classification.")
+    print("No local model generation required.")
+    print("")
+    print("The model is automatically downloaded and cached on first use.")
+    print("See backend/utils/model.py for the new implementation.")
+
 
 if __name__ == "__main__":
     generate_local_model()

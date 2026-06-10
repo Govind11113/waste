@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 from pydantic import BaseModel
+from app.db import log_carbon_calculation
 
 router = APIRouter(prefix="/carbon", tags=["Carbon Calculator"])
 
@@ -99,6 +100,25 @@ async def calculate_carbon(request: CarbonRequest):
 
     baseline_avg = 500 * request.units
     trees_planted = int(total_tco2e * 45)
+
+    # Persist to carbon history (best-effort)
+    try:
+        log_carbon_calculation(
+            device_type=device_key,
+            units=request.units,
+            daily_hours=request.daily_hours,
+            tdp=request.tdp,
+            energy_rating=request.energy_rating,
+            zip_code=request.zip_code,
+            lifespan_years=lifespan,
+            total_tco2e=round(total_tco2e, 3),
+            embodied_kg=round(embodied_kg, 1),
+            operational_kg=round(operational_kg, 1),
+            grid_intensity=grid_intensity,
+            trees_planted=trees_planted,
+        )
+    except Exception as e:
+        print(f"[carbon] Failed to log carbon history: {e}")
 
     return CarbonResponse(
         total_tco2e=round(total_tco2e, 3),

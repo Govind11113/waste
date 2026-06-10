@@ -21,26 +21,26 @@ function Home() {
     {
       icon: "photo_camera",
       title: "Image Classifier",
-      description: "Identify e-waste devices using a trained ResNet-50 with CLIP fallback for broader coverage.",
-      link: "/signup"
+      description: "Identify e-waste devices using CLIP/SigLIP zero-shot vision models covering 40+ electronic categories.",
+      link: "/scanner"
     },
     {
       icon: "hourglass_empty",
       title: "Lifespan Predictor",
       description: "Predict remaining device life with a transparent weighted-average formula across age, usage, and environment.",
-      link: "/signup"
+      link: "/lifespan"
     },
     {
       icon: "eco",
       title: "Carbon Calculator",
       description: "Estimate lifetime carbon footprint with grid-intensity-aware operational emissions.",
-      link: "/signup"
+      link: "/inventory"
     },
     {
       icon: "history",
       title: "Activity History",
       description: "Track every scan and prediction in a chronological audit log.",
-      link: "/signup"
+      link: "/history"
     }
   ]
 

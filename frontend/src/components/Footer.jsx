@@ -17,7 +17,7 @@ function Footer() {
           </a>
         </div>
         <p className="font-body text-xs uppercase tracking-widest text-on-surface-variant opacity-70">
-          2024 E-Waste Management. Preserving the digital ecosystem.
+          2025 E-Waste Management. Preserving the digital ecosystem.
         </p>
       </div>
     </footer>

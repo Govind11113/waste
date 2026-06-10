@@ -49,7 +49,18 @@ except ImportError:
 
 HAS_TORCH = True
 
-from .logger import setup_logger
+import logging
+
+
+def setup_logger(name: str, level: int = logging.INFO) -> logging.Logger:
+    """Create a module-level logger with a consistent format."""
+    logger = logging.getLogger(name)
+    if not logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(asctime)s [%(name)s] %(levelname)s: %(message)s"))
+        logger.addHandler(handler)
+        logger.setLevel(level)
+    return logger
 
 
 # Unified label mapping - 8 e-waste categories

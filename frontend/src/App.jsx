@@ -10,7 +10,7 @@ import ProtectedRoute from './components/ProtectedRoute'
 const Home = lazy(() => import('./components/Home'))
 const Dashboard = lazy(() => import('./components/Dashboard'))
 const Scanner = lazy(() => import('./components/Scanner'))
-const LifespanPredictor = lazy(() => import('./components/LifespanPredictor'))
+const LifespanPredictor = lazy(() => import('./components/LifespanPredictorV2.jsx'))
 const Inventory = lazy(() => import('./components/Inventory'))
 const History = lazy(() => import('./components/History'))
 const Signup = lazy(() => import('./components/Signup'))

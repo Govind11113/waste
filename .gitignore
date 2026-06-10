@@ -37,6 +37,12 @@ yarn-error.log*
 # Model cache (ignore generated cache, NOT trained models)
 backend/cache/
 # Note: trained models in backend/models/ are tracked
+# Generated training artifacts (rebuildable from scripts)
+backend/models/lifespan/categorical_features.pkl
+backend/models/lifespan/feature_columns.pkl
+backend/models/lifespan/numeric_features.pkl
+backend/models/lifespan/training_metrics.json
+backend/data/processed/synthetic/lifespan_dataset.csv
 
 # Database
 *.db
@@ -56,3 +62,13 @@ backend_log.txt
 .vscode/
 *.swp
 *.swo
+
+# Runtime artifacts
+backend/server.pid
+
+# AI agent config
+.claude/
+.gemini/
+
+# Project review artifacts
+Project_Review.pdf

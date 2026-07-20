@@ -1,35 +1,52 @@
-"""
-DEPRECATED: This script is no longer needed.
+#!/usr/bin/env python3
+"""Deprecated, non-mutating classifier-generator command.
 
-The e-waste classifier now uses Google's SigLIP-So400M model for zero-shot classification,
-which works out of the box without requiring any local model training or generation.
-
-The model is automatically downloaded and cached on first use from Hugging Face:
-  https://huggingface.co/google/siglip-so400m-patch14-384
-
-For reference, this script previously generated an untrained ResNet-50 model that was
-never actually used for classification (the system always fell through to the zero-shot fallback).
-
-The new implementation is in:
-  backend/utils/model.py
-
-To use the classifier, simply:
-  1. Install dependencies: pip install -r requirements.txt
-  2. Start the backend: uvicorn app.main:app --host 0.0.0.0 --port 8001
-  3. The model will be downloaded automatically on first /scan request
+The application does not generate or train a local CNN. It performs inference
+with a pre-trained SigLIP 2 or CLIP vision-language model configured in
+``app/model.py``. This command is retained only to redirect old instructions.
 """
 
-import sys
+from __future__ import annotations
+
+import argparse
+from collections.abc import Sequence
+
+PRIMARY_PRESETS = (
+    "siglip2-base (default)",
+    "siglip2-so400m-256",
+    "siglip2-so400m-384",
+    "siglip2-so400m-512",
+    "siglip2-large-512",
+    "siglip2-giant-384",
+    "clip-base",
+)
 
 
-def generate_local_model():
-    print("DEPRECATED: This script is no longer needed.")
-    print("The e-waste classifier now uses Google's SigLIP-So400M for zero-shot classification.")
-    print("No local model generation required.")
-    print("")
-    print("The model is automatically downloaded and cached on first use.")
-    print("See backend/utils/model.py for the new implementation.")
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Deprecated informational command; no model is generated or trained."
+    )
+    parser.add_argument(
+        "--show-presets",
+        action="store_true",
+        help="list the primary EWASTE_MODEL presets",
+    )
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    print("DEPRECATED: no classifier artifact was generated or modified.")
+    print("Active implementation: backend/app/model.py")
+    print("Start the API from the repository root: ./run_backend.sh")
+    print("Default API URL: http://127.0.0.1:8000")
+    print("The selected Hugging Face model downloads on first use unless already cached.")
+    if args.show_presets:
+        print("Primary EWASTE_MODEL presets:")
+        for preset in PRIMARY_PRESETS:
+            print(f"  - {preset}")
+    return 0
 
 
 if __name__ == "__main__":
-    generate_local_model()
+    raise SystemExit(main())

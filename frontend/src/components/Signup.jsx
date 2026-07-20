@@ -1,16 +1,18 @@
 import { useState, useEffect } from 'react'
 import { SignUp, useClerk } from '@clerk/clerk-react'
-import { clerkAppearance } from '../config/clerkAppearance'
+import { useLocation } from 'react-router-dom'
+import { clerkAppearance } from '../lib/clerkAppearance'
 
 function Signup() {
   const { loaded } = useClerk()
+  const location = useLocation()
+  const redirectTo = location.state?.from?.pathname || '/dashboard'
   const [showContent, setShowContent] = useState(false)
 
   useEffect(() => {
-    if (loaded) {
-      const timer = setTimeout(() => setShowContent(true), 100)
-      return () => clearTimeout(timer)
-    }
+    if (!loaded) return undefined
+    const timer = window.setTimeout(() => setShowContent(true), 100)
+    return () => window.clearTimeout(timer)
   }, [loaded])
 
   return (
@@ -33,7 +35,7 @@ function Signup() {
             Preserving the <span className="text-primary">Ecosystem</span> through Digital Intelligence.
           </h1>
           <p className="text-on-surface-variant text-lg leading-relaxed max-w-lg">
-            Join E-Waste Management in redefining electronic lifecycles. Our conservatory approach treats every component with clinical precision and ecological care.
+            Join the E-Waste Management prototype to explore transparent classification, calculation, and inventory-planning workflows.
           </p>
         </div>
       </div>
@@ -65,26 +67,26 @@ function Signup() {
               <span className="text-2xl font-bold font-headline tracking-tight text-on-surface">E-Waste Management</span>
             </div>
             <h2 className="font-display text-3xl font-bold text-on-surface mb-2">Create Account</h2>
-            <p className="text-on-surface-variant font-body">Register your institution to begin life-cycle predictions.</p>
+            <p className="text-on-surface-variant font-body">Register to use the protected planning tools and per-user activity history.</p>
           </div>
 
           <SignUp
             routing="path"
             path="/signup"
             signInUrl="/login"
-            forceRedirectUrl="/dashboard"
-            fallbackRedirectUrl="/dashboard"
+            forceRedirectUrl={redirectTo}
+            fallbackRedirectUrl={redirectTo}
             appearance={clerkAppearance}
           />
 
           <div className="mt-16 pt-8 border-t border-outline-variant/10 flex items-center justify-center text-outline/60 space-x-6 animate-fade-in-up">
             <div className="flex items-center space-x-1 hover:text-primary transition-colors duration-300">
               <span className="material-symbols-outlined text-sm">lock</span>
-              <span className="text-[10px] uppercase tracking-widest font-bold">Encrypted</span>
+              <span className="text-[10px] uppercase tracking-widest font-bold">Authenticated</span>
             </div>
             <div className="flex items-center space-x-1 hover:text-primary transition-colors duration-300">
               <span className="material-symbols-outlined text-sm">verified_user</span>
-              <span className="text-[10px] uppercase tracking-widest font-bold">Institutional Grade</span>
+              <span className="text-[10px] uppercase tracking-widest font-bold">Prototype</span>
             </div>
           </div>
         </div>

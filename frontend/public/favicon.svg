@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="E-Waste Management">
+  <defs>
+    <linearGradient id="g" x1="8" y1="8" x2="56" y2="56" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#6f963f"/>
+      <stop offset="1" stop-color="#00629e"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="#f7f9ff"/>
+  <path d="M18 19h28v24H18z" fill="none" stroke="url(#g)" stroke-width="5" stroke-linejoin="round"/>
+  <path d="M25 12v7m14-7v7M25 43v9m14-9v9M11 26h7m-7 10h7m28-10h7m-7 10h7" stroke="#486730" stroke-width="4" stroke-linecap="round"/>
+  <path d="M25 35c8 1 14-4 15-12-8-1-14 4-15 12Zm0 0c3-4 7-7 12-9" fill="none" stroke="#00629e" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

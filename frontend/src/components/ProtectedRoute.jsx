@@ -1,6 +1,7 @@
 import { SignedIn, SignedOut } from '@clerk/clerk-react'
 import { Navigate, useLocation } from 'react-router-dom'
 
+/** @param {{ children: import('react').ReactNode }} props */
 function ProtectedRoute({ children }) {
   const location = useLocation()
 

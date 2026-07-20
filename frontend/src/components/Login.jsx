@@ -1,16 +1,18 @@
 import { useState, useEffect } from 'react'
 import { SignIn, useClerk } from '@clerk/clerk-react'
-import { clerkAppearance } from '../config/clerkAppearance'
+import { useLocation } from 'react-router-dom'
+import { clerkAppearance } from '../lib/clerkAppearance'
 
 function Login() {
   const { loaded } = useClerk()
+  const location = useLocation()
+  const redirectTo = location.state?.from?.pathname || '/dashboard'
   const [showContent, setShowContent] = useState(false)
 
   useEffect(() => {
-    if (loaded) {
-      const timer = setTimeout(() => setShowContent(true), 100)
-      return () => clearTimeout(timer)
-    }
+    if (!loaded) return undefined
+    const timer = window.setTimeout(() => setShowContent(true), 100)
+    return () => window.clearTimeout(timer)
   }, [loaded])
 
   return (
@@ -33,7 +35,7 @@ function Login() {
             Preserving the <span className="text-primary">Ecosystem</span> through Digital Intelligence.
           </h1>
           <p className="text-on-surface-variant text-lg leading-relaxed max-w-lg">
-            Join E-Waste Management in redefining electronic lifecycles. Our conservatory approach treats every component with clinical precision and ecological care.
+            Sign in to continue using the prototype's transparent classification, calculation, and inventory-planning workflows.
           </p>
         </div>
       </div>
@@ -64,15 +66,15 @@ function Login() {
               <span className="text-2xl font-bold font-headline tracking-tight text-on-surface">E-Waste Management</span>
             </div>
             <h2 className="font-display text-3xl font-bold text-on-surface mb-2">Welcome Back</h2>
-            <p className="text-on-surface-variant font-body">Access your Digital Conservatory dashboard.</p>
+            <p className="text-on-surface-variant font-body">Access your authenticated planning dashboard.</p>
           </div>
 
           <SignIn
             routing="path"
             path="/login"
             signUpUrl="/signup"
-            forceRedirectUrl="/dashboard"
-            fallbackRedirectUrl="/dashboard"
+            forceRedirectUrl={redirectTo}
+            fallbackRedirectUrl={redirectTo}
             appearance={clerkAppearance}
           />
         </div>

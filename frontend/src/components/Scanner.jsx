@@ -1,210 +1,261 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
+import { motion } from 'framer-motion'
 import { toast } from 'react-hot-toast'
-import html2pdf from 'html2pdf.js'
+import { createPdfFilename, createPdfReport, exportPdf } from '../utils/pdf'
+import { validateImageFile, uploadWithProgress, getRateLimitInfo } from '../utils/apiUtils'
+import AnimatedPage from './AnimatedPage'
+import { scaleReveal, hoverLift, tapShrink } from '../utils/motion'
+import { useAuth } from '@clerk/clerk-react'
+
+/**
+ * @typedef {{
+ *   entity: string,
+ *   confidence: number,
+ *   condition: string,
+ *   model_used: string,
+ *   group: string,
+ *   waste_status: string,
+ *   recyclable: boolean,
+ *   recyclability: string,
+ *   co2_delta: number,
+ *   disposal_advice: string,
+ *   analysis_id?: string,
+ *   processing_time: number,
+ *   rejection_reason?: string,
+ * }} ScannerResult
+ */
 
 function Scanner() {
-  const [file, setFile] = useState(null)
-  const [preview, setPreview] = useState(null)
-  const [previewDataUrl, setPreviewDataUrl] = useState(null)
-  const [result, setResult] = useState(null)
+  const [file, setFile] = useState(/** @type {File | null} */ (null))
+  const [preview, setPreview] = useState(/** @type {string | null} */ (null))
+  const [previewDataUrl, setPreviewDataUrl] = useState(/** @type {string | null} */ (null))
+  const [result, setResult] = useState(/** @type {ScannerResult | null} */ (null))
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState(null)
+  const [uploadProgress, setUploadProgress] = useState(0)
+  const [error, setError] = useState(/** @type {string | null} */ (null))
   const [isDragging, setIsDragging] = useState(false)
-  const fileInputRef = useRef(null)
+  const [rateLimit, setRateLimit] = useState(/** @type {{ remaining: number | null, reset: number | null } | null} */ (null))
+  const fileInputRef = useRef(/** @type {HTMLInputElement | null} */ (null))
+  const previewUrlRef = useRef(/** @type {string | null} */ (null))
+  const uploadControllerRef = useRef(/** @type {AbortController | null} */ (null))
+  const selectionSequenceRef = useRef(0)
+  const { getToken } = useAuth()
 
-  const fileToDataUrl = (f) => new Promise((resolve, reject) => {
+  /** @param {string | null} newUrl */
+  const setPreviewUrl = (newUrl) => {
+    if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current)
+    previewUrlRef.current = newUrl
+    setPreview(newUrl)
+  }
+
+  useEffect(() => () => {
+    uploadControllerRef.current?.abort()
+    if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current)
+  }, [])
+
+  /** @param {File} selectedFile @returns {Promise<string>} */
+  const fileToDataUrl = (selectedFile) => new Promise((resolve, reject) => {
     const reader = new FileReader()
-    reader.onload = () => resolve(reader.result)
-    reader.onerror = reject
-    reader.readAsDataURL(f)
+    reader.onload = () => {
+      if (typeof reader.result === 'string') resolve(reader.result)
+      else reject(new Error('Could not create image preview'))
+    }
+    reader.onerror = () => reject(reader.error ?? new Error('Could not read image'))
+    reader.readAsDataURL(selectedFile)
   })
 
-  const handleFileSelect = async (e) => {
-    const selectedFile = e.target.files[0]
-    if (selectedFile) {
-      setFile(selectedFile)
-      setPreview(URL.createObjectURL(selectedFile))
-      setResult(null)
-      setError(null)
-      try {
-        const dataUrl = await fileToDataUrl(selectedFile)
-        setPreviewDataUrl(dataUrl)
-      } catch {
-        setPreviewDataUrl(null)
-      }
+  /** @param {File} selectedFile */
+  const selectFile = async (selectedFile) => {
+    const sequence = ++selectionSequenceRef.current
+    const validation = await validateImageFile(selectedFile)
+    if (sequence !== selectionSequenceRef.current) return
+    if (!validation.valid) {
+      toast.error(validation.error || 'Invalid image')
+      return
+    }
+
+    uploadControllerRef.current?.abort()
+    uploadControllerRef.current = null
+    setLoading(false)
+    setUploadProgress(0)
+    setFile(selectedFile)
+    setPreviewUrl(URL.createObjectURL(selectedFile))
+    setPreviewDataUrl(null)
+    setResult(null)
+    setError(null)
+
+    try {
+      const dataUrl = await fileToDataUrl(selectedFile)
+      if (sequence === selectionSequenceRef.current) setPreviewDataUrl(dataUrl)
+    } catch {
+      if (sequence === selectionSequenceRef.current) setPreviewDataUrl(null)
     }
   }
 
-  const handleDrop = async (e) => {
-    e.preventDefault()
+  /** @param {import('react').ChangeEvent<HTMLInputElement>} event */
+  const handleFileSelect = (event) => {
+    const selectedFile = event.target.files?.[0]
+    if (selectedFile) selectFile(selectedFile)
+  }
+
+  /** @param {import('react').DragEvent<HTMLDivElement>} event */
+  const handleDrop = (event) => {
+    event.preventDefault()
     setIsDragging(false)
-    const droppedFile = e.dataTransfer.files[0]
-    if (droppedFile && droppedFile.type.startsWith('image/')) {
-      setFile(droppedFile)
-      setPreview(URL.createObjectURL(droppedFile))
-      setResult(null)
-      setError(null)
-      try {
-        const dataUrl = await fileToDataUrl(droppedFile)
-        setPreviewDataUrl(dataUrl)
-      } catch {
-        setPreviewDataUrl(null)
-      }
+    const droppedFile = event.dataTransfer.files?.[0]
+    if (droppedFile && !loading && !result) selectFile(droppedFile)
+  }
+
+  /** @param {import('react').DragEvent<HTMLDivElement>} event */
+  const handleDragOver = (event) => {
+    event.preventDefault()
+    if (!loading && !result) setIsDragging(true)
+  }
+
+  /** @param {import('react').DragEvent<HTMLDivElement>} event */
+  const handleDragLeave = (event) => {
+    event.preventDefault()
+    setIsDragging(false)
+  }
+
+  const openFilePicker = () => {
+    if (!loading && !result) fileInputRef.current?.click()
+  }
+
+  /** @param {import('react').KeyboardEvent<HTMLDivElement>} event */
+  const handleUploadKeyDown = (event) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault()
+      openFilePicker()
     }
-  }
-
-  const handleDragOver = (e) => {
-    e.preventDefault()
-    setIsDragging(true)
-  }
-
-  const handleDragLeave = (e) => {
-    e.preventDefault()
-    setIsDragging(false)
   }
 
   const handleAnalyze = async () => {
-    if (!file) return
+    if (!file || loading) return
 
+    uploadControllerRef.current?.abort()
+    const controller = new AbortController()
+    uploadControllerRef.current = controller
     setLoading(true)
     setError(null)
+    setUploadProgress(0)
     const formData = new FormData()
     formData.append('file', file)
 
     try {
-      const response = await fetch('/api/v1/classifier/scan', {
-        method: 'POST',
-        body: formData
-      })
-      if (!response.ok) throw new Error('Classification failed. Please try again.')
-      const data = await response.json()
+      const token = await getToken()
+      if (controller.signal.aborted) throw new DOMException('Upload aborted', 'AbortError')
+      const response = await uploadWithProgress(
+        '/api/v1/classifier/scan',
+        formData,
+        token,
+        (progress) => {
+          if (uploadControllerRef.current === controller) setUploadProgress(progress)
+        },
+        { signal: controller.signal, timeoutMs: 180_000 },
+      )
+
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(data.detail || `Classification failed (${response.status})`)
+      if (uploadControllerRef.current !== controller) return
+
+      const rateLimitInfo = getRateLimitInfo(response)
+      if (rateLimitInfo.remaining !== null) setRateLimit(rateLimitInfo)
       setResult(data)
-    } catch (err) {
-      const message = err.message || 'Failed to analyze image. Please try again.'
+      setUploadProgress(100)
+    } catch (caught) {
+      if (controller.signal.aborted || (caught instanceof DOMException && caught.name === 'AbortError')) return
+      const message = caught instanceof Error ? caught.message : 'Failed to analyze image. Please try again.'
       setError(message)
       toast.error(message)
     } finally {
-      setLoading(false)
+      if (uploadControllerRef.current === controller) {
+        uploadControllerRef.current = null
+        setLoading(false)
+      }
     }
   }
 
   const handleReset = () => {
+    selectionSequenceRef.current += 1
+    uploadControllerRef.current?.abort()
+    uploadControllerRef.current = null
+    setLoading(false)
+    setUploadProgress(0)
+    setIsDragging(false)
     setFile(null)
-    setPreview(null)
+    setPreviewUrl(null)
     setPreviewDataUrl(null)
     setResult(null)
+    setRateLimit(null)
     setError(null)
-    if (fileInputRef.current) {
-      fileInputRef.current.value = ''
-    }
+    if (fileInputRef.current) fileInputRef.current.value = ''
   }
 
-  const handleDownloadPDF = () => {
+  const handleDownloadPDF = async () => {
     if (!result || result.entity === 'Unrecognized') return
 
-    const generatedAt = new Date().toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })
-    const confidencePct = (result.confidence * 100).toFixed(1)
-    const hazardColor = result.hazard_level === 'Hazardous' ? '#ba1a1a' : '#486730'
-    const conditionLabel = result.condition.charAt(0).toUpperCase() + result.condition.slice(1)
+    const userLocale = navigator.language || 'en-IN'
+    const generatedAt = new Date().toLocaleString(userLocale, { dateStyle: 'medium', timeStyle: 'short' })
+    const confidencePct = (Number(result.confidence) * 100).toFixed(1)
+    const condition = String(result.condition || 'unknown')
+    const conditionLabel = condition.charAt(0).toUpperCase() + condition.slice(1)
     const modelLabel = result.model_used === 'local'
-      ? 'CLIP Zero-Shot Classification'
+      ? 'CLIP zero-shot classification'
       : result.model_used === 'siglip'
-        ? 'SigLIP Zero-Shot Classification'
-        : result.model_used?.includes('low_confidence')
-          ? 'Zero-Shot (Low Confidence)'
-          : 'Zero-Shot Classification'
+        ? 'SigLIP zero-shot classification'
+        : String(result.model_used || '').includes('low_confidence')
+          ? 'Zero-shot classification (low confidence)'
+          : 'Zero-shot classification'
+    const imageName = file?.name || 'device image'
+    const report = createPdfReport({
+      title: 'E-Waste Classification Report',
+      subtitle: 'Maharashtra Educational Sector — Device Classification',
+      summaryLabel: 'Identified device',
+      summaryValue: String(result.entity),
+      summaryDetail: `Category ${result.group} · Confidence ${confidencePct}%`,
+      image: typeof previewDataUrl === 'string'
+        ? {
+            src: previewDataUrl,
+            alt: `${result.entity} device in ${condition.toLowerCase()} condition`,
+            caption: `Analyzed file: ${imageName}`,
+          }
+        : undefined,
+      sections: [
+        {
+          heading: 'Classification details',
+          rows: [
+            { label: 'Waste status', value: result.waste_status },
+            { label: 'Recyclable', value: result.recyclable ? `Yes — ${result.recyclability} material recovery` : 'No' },
+            { label: 'Condition heuristic', value: conditionLabel },
+            { label: 'Indicative material-recovery CO₂ estimate', value: `${result.co2_delta} kg` },
+            { label: 'Model used', value: modelLabel },
+          ],
+        },
+        {
+          heading: 'Disposal recommendation',
+          paragraphs: [
+            String(result.disposal_advice || 'Consult an authorized recycler for device-specific handling.'),
+            'The classification is zero-shot model inference and the condition label is a global-image heuristic. This report is decision support, not a certified inspection or measured recycling outcome.',
+            'Under the E-Waste (Management) Rules, 2022, institutions should channel end-of-life electronics through authorized recyclers and retain appropriate disposal records.',
+          ],
+        },
+      ],
+      footerLeft: `Generated: ${generatedAt}`,
+      footerRight: `Analysis ID: ${String(result.analysis_id || 'N/A').slice(0, 13)}`,
+    })
 
-    const element = document.createElement('div')
-    element.innerHTML = `
-      <div style="padding: 40px; font-family: 'Inter', Arial, sans-serif; color: #1a1c18; max-width: 800px;">
-        <div style="border-bottom: 3px solid #486730; padding-bottom: 16px; margin-bottom: 24px;">
-          <h1 style="color: #486730; margin: 0 0 4px 0; font-size: 26px;">E-Waste Management System</h1>
-          <p style="color: #555; font-size: 13px; margin: 0;">Maharashtra Educational Sector — Device Classification Report</p>
-        </div>
-
-        ${previewDataUrl ? `
-          <div style="margin-bottom: 24px; text-align: center;">
-            <img src="${previewDataUrl}" alt="Analyzed device"
-                 style="max-width: 100%; max-height: 280px; border-radius: 8px; border: 1px solid #ddd;" />
-            <p style="color: #888; font-size: 11px; margin-top: 6px;">Submitted image: ${file?.name || 'device.jpg'}</p>
-          </div>
-        ` : ''}
-
-        <div style="background: #f0f4f8; padding: 24px; border-radius: 12px; margin-bottom: 24px;">
-          <h2 style="margin: 0 0 6px 0; color: #1a1c18; font-size: 14px; text-transform: uppercase; letter-spacing: 1px;">Identified Device</h2>
-          <div style="font-size: 32px; font-weight: 800; color: #486730; margin-bottom: 8px;">${result.entity}</div>
-          <div style="font-size: 13px; color: #555;">Category: ${result.group}</div>
-          <div style="margin-top: 16px;">
-            <div style="font-size: 12px; color: #555; margin-bottom: 4px;">Confidence: <strong>${confidencePct}%</strong></div>
-            <div style="background: #e2e8f0; height: 10px; border-radius: 5px; overflow: hidden;">
-              <div style="background: #486730; width: ${confidencePct}%; height: 100%;"></div>
-            </div>
-          </div>
-        </div>
-
-        <table style="width: 100%; border-collapse: collapse; margin-bottom: 24px;">
-          <tr>
-            <td style="padding: 12px; border: 1px solid #e2e8f0; background: #fafbfc; font-weight: 600; color: #555; width: 40%;">Waste Status</td>
-            <td style="padding: 12px; border: 1px solid #e2e8f0; color: ${result.waste_status === 'E-Waste' ? '#ba1a1a' : '#486730'}; font-weight: 700;">${result.waste_status}</td>
-          </tr>
-          <tr>
-            <td style="padding: 12px; border: 1px solid #e2e8f0; background: #fafbfc; font-weight: 600; color: #555;">Recyclable</td>
-            <td style="padding: 12px; border: 1px solid #e2e8f0; color: ${result.recyclable ? '#486730' : '#ba1a1a'}; font-weight: 700;">
-              ${result.recyclable ? `Yes — ${result.recyclability} material recovery` : 'No'}
-            </td>
-          </tr>
-          <tr>
-            <td style="padding: 12px; border: 1px solid #e2e8f0; background: #fafbfc; font-weight: 600; color: #555;">Hazard Level</td>
-            <td style="padding: 12px; border: 1px solid #e2e8f0; color: ${hazardColor}; font-weight: 700;">${result.hazard_level}</td>
-          </tr>
-          <tr>
-            <td style="padding: 12px; border: 1px solid #e2e8f0; background: #fafbfc; font-weight: 600; color: #555;">Condition</td>
-            <td style="padding: 12px; border: 1px solid #e2e8f0;">${conditionLabel}</td>
-          </tr>
-          <tr>
-            <td style="padding: 12px; border: 1px solid #e2e8f0; background: #fafbfc; font-weight: 600; color: #555;">CO₂ Saved by Recycling</td>
-            <td style="padding: 12px; border: 1px solid #e2e8f0; color: #486730; font-weight: 700;">${result.co2_delta} kg</td>
-          </tr>
-          <tr>
-            <td style="padding: 12px; border: 1px solid #e2e8f0; background: #fafbfc; font-weight: 600; color: #555;">Model Used</td>
-            <td style="padding: 12px; border: 1px solid #e2e8f0;">${modelLabel}</td>
-          </tr>
-        </table>
-
-        <div style="padding: 20px; border-left: 4px solid #486730; background: #f0f4f8; border-radius: 8px; margin-bottom: 24px;">
-          <h3 style="margin: 0 0 8px 0; color: #486730; font-size: 14px; text-transform: uppercase; letter-spacing: 1px;">Disposal Recommendation</h3>
-          <p style="margin: 0; line-height: 1.6; color: #1a1c18;">${result.disposal_advice}</p>
-        </div>
-
-        <div style="padding: 16px; border: 1px solid #e2e8f0; border-radius: 8px; margin-bottom: 32px; background: #fff;">
-          <h3 style="margin: 0 0 8px 0; color: #555; font-size: 12px; text-transform: uppercase; letter-spacing: 1px;">Compliance Note</h3>
-          <p style="margin: 0; font-size: 12px; line-height: 1.5; color: #555;">
-            Under the E-Waste (Management) Rules, 2022, educational institutions in Maharashtra must channel
-            end-of-life electronics through authorized recyclers and maintain audit-ready disposal records.
-          </p>
-        </div>
-
-        <div style="display: flex; justify-content: space-between; padding-top: 16px; border-top: 1px solid #e2e8f0; font-size: 10px; color: #999;">
-          <span>Generated: ${generatedAt}</span>
-          <span>Analysis ID: ${result.analysis_id?.slice(0, 13) || 'N/A'}</span>
-        </div>
-      </div>
-    `
-
-    const opt = {
-      margin: 0.4,
-      filename: `${result.entity.replace(/\s|\//g, '_')}_Scan_Report.pdf`,
-      image: { type: 'jpeg', quality: 0.98 },
-      html2canvas: { scale: 2, useCORS: true },
-      jsPDF: { unit: 'in', format: 'letter', orientation: 'portrait' }
+    try {
+      await exportPdf(report, createPdfFilename(result.entity, 'Scan_Report'))
+      toast.success('Report downloaded')
+    } catch {
+      toast.error('Could not generate the PDF report')
     }
-
-    html2pdf().from(element).set(opt).save()
-    toast.success('Report downloaded')
   }
 
   const isUnrecognized = result?.entity === 'Unrecognized'
 
+  /** @param {string} condition */
   const getConditionIcon = (condition) => {
     switch (condition) {
       case 'burnt': return { icon: 'local_fire_department', color: 'text-error' }
@@ -214,6 +265,7 @@ function Scanner() {
   }
 
   return (
+    <AnimatedPage>
     <div className="pt-32 pb-20 px-8 max-w-7xl mx-auto page-transition">
       <header className="mb-12 animate-fade-in-down">
         <h1 className="text-5xl font-extrabold text-on-surface tracking-tight mb-4">E-Waste Classifier</h1>
@@ -223,11 +275,19 @@ function Scanner() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
         <section className="animate-fade-in-up stagger-1">
           <div
-            onClick={() => !result && fileInputRef.current?.click()}
+            role="button"
+            tabIndex={0}
+            aria-label={result ? 'Image already analyzed. Choose New Scan to upload another image.' : 'Upload a device image'}
+            aria-describedby={preview ? undefined : 'scanner-upload-help'}
+            aria-disabled={loading || Boolean(result)}
+            onClick={openFilePicker}
+            onKeyDown={handleUploadKeyDown}
             onDrop={handleDrop}
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
-            className={`bg-surface-container-lowest border-2 border-dashed rounded-xl p-12 text-center cursor-pointer transition-all duration-300 ${
+            className={`bg-surface-container-lowest border-2 border-dashed rounded-xl p-12 text-center transition-all duration-300 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 ${
+              loading || result ? 'cursor-default' : 'cursor-pointer'
+            } ${
               isDragging
                 ? 'border-secondary bg-secondary/5 scale-[1.02] shadow-lg'
                 : result
@@ -237,17 +297,17 @@ function Scanner() {
           >
             {preview ? (
               <div className="animate-image-reveal">
-                <img src={preview} alt="Preview" className="w-full h-64 object-contain rounded-lg mb-4" />
+                <img src={preview} alt={`Selected device: ${file?.name || 'image preview'}`} className="w-full h-64 object-contain rounded-lg mb-4" />
                 <p className="text-sm text-on-surface font-medium">{file?.name}</p>
                 {result && !isUnrecognized && (
                   <div className="mt-3 inline-flex items-center gap-2 px-3 py-1 bg-primary/10 rounded-full animate-fade-in">
-                    <span className="material-symbols-outlined text-primary text-sm">check_circle</span>
+                    <span className="material-symbols-outlined text-primary text-sm" aria-hidden="true">check_circle</span>
                     <span className="text-xs font-bold text-primary">Analyzed</span>
                   </div>
                 )}
                 {isUnrecognized && (
                   <div className="mt-3 inline-flex items-center gap-2 px-3 py-1 bg-error/10 rounded-full animate-fade-in">
-                    <span className="material-symbols-outlined text-error text-sm">help</span>
+                    <span className="material-symbols-outlined text-error text-sm" aria-hidden="true">help</span>
                     <span className="text-xs font-bold text-error">Not Recognized</span>
                   </div>
                 )}
@@ -256,45 +316,83 @@ function Scanner() {
               <>
                 <span className={`material-symbols-outlined text-6xl mb-4 transition-all duration-300 ${
                   isDragging ? 'text-secondary scale-110' : 'text-outline'
-                }`}>
+                }`} aria-hidden="true">
                   {isDragging ? 'file_download' : 'cloud_upload'}
                 </span>
                 <p className="text-lg font-semibold text-on-surface mb-2">
-                  {isDragging ? 'Drop image here' : 'Drop image here or click to upload'}
+                  {isDragging ? 'Drop image here' : 'Drop image here, click, or press Enter to upload'}
                 </p>
-                <p className="text-sm text-outline">Supports JPG, PNG up to 10MB</p>
+                <p id="scanner-upload-help" className="text-sm text-outline">JPEG, PNG, or WebP up to 10MB; minimum dimension 160px.</p>
               </>
             )}
             <input
+              id="scanner-file-input"
               ref={fileInputRef}
               type="file"
-              accept="image/*"
+              accept="image/jpeg,image/png,image/webp"
+              aria-label="Choose a device image"
+              tabIndex={-1}
+              onClick={(event) => event.stopPropagation()}
               onChange={handleFileSelect}
-              className="hidden"
+              className="sr-only"
             />
           </div>
 
           {preview && !result && (
-            <div className="mt-4 flex gap-3 animate-fade-in-up">
-              <button
-                onClick={handleAnalyze}
-                disabled={loading}
-                className="flex-1 bg-primary text-on-primary py-3.5 rounded-xl font-bold hover:opacity-90 transition-all disabled:opacity-50 hover:-translate-y-0.5 hover:shadow-lg active:scale-[0.98] btn-ripple"
-              >
-                {loading ? (
-                  <span className="flex items-center justify-center gap-2">
-                    <span className="material-symbols-outlined animate-spin text-lg">progress_activity</span>
-                    Analyzing...
-                  </span>
-                ) : 'Analyze Image'}
-              </button>
-              <button
-                onClick={handleReset}
-                disabled={loading}
-                className="px-6 border border-outline text-on-surface py-3.5 rounded-xl font-bold hover:bg-surface-container transition-all disabled:opacity-50 active:scale-[0.98]"
-              >
-                Reset
-              </button>
+            <div className="mt-4 animate-fade-in-up">
+              {uploadProgress > 0 && uploadProgress < 100 && (
+                <div className="mb-3">
+                  <div className="flex justify-between text-sm text-on-surface-variant mb-1">
+                    <span>Uploading...</span>
+                    <span>{uploadProgress}%</span>
+                  </div>
+                  <div
+                    className="h-2 bg-surface-container rounded-full overflow-hidden"
+                    role="progressbar"
+                    aria-label="Image upload progress"
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={uploadProgress}
+                  >
+                    <div
+                      className="h-full bg-primary transition-all duration-300"
+                      style={{ width: `${uploadProgress}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+
+              <div className="flex gap-3">
+                <motion.button
+                  whileHover={hoverLift}
+                  whileTap={tapShrink}
+                  onClick={handleAnalyze}
+                  disabled={loading}
+                  className="flex-1 bg-primary text-on-primary py-3.5 rounded-xl font-bold hover:opacity-90 transition-all disabled:opacity-50 hover:-translate-y-0.5 hover:shadow-lg active:scale-[0.98] btn-ripple"
+                >
+                  {loading ? (
+                    <span className="flex items-center justify-center gap-2">
+                      <span className="material-symbols-outlined animate-spin text-lg">progress_activity</span>
+                      Analyzing...
+                    </span>
+                  ) : 'Analyze Image'}
+                </motion.button>
+                <motion.button
+                  whileHover={hoverLift}
+                  whileTap={tapShrink}
+                  onClick={handleReset}
+                  disabled={loading}
+                  className="px-6 border border-outline text-on-surface py-3.5 rounded-xl font-bold hover:bg-surface-container transition-all disabled:opacity-50 active:scale-[0.98]"
+                >
+                  Reset
+                </motion.button>
+              </div>
+
+              {rateLimit && rateLimit.remaining !== null && (
+                <div className="mt-3 text-sm text-on-surface-variant text-center">
+                  {rateLimit.remaining} scans remaining this minute
+                </div>
+              )}
             </div>
           )}
 
@@ -307,25 +405,29 @@ function Scanner() {
                 <span className="material-symbols-outlined text-lg">download</span>
                 Download Report
               </button>
-              <button
+              <motion.button
+                whileHover={hoverLift}
+                whileTap={tapShrink}
                 onClick={handleReset}
                 className="border-2 border-primary text-primary py-3.5 rounded-xl font-bold hover:bg-primary/5 transition-all active:scale-[0.98] hover:-translate-y-0.5 flex items-center justify-center gap-2"
               >
                 <span className="material-symbols-outlined text-lg">add_a_photo</span>
                 New Scan
-              </button>
+              </motion.button>
             </div>
           )}
 
           {result && isUnrecognized && (
             <div className="mt-4 flex gap-3 animate-fade-in-up">
-              <button
+              <motion.button
+                whileHover={hoverLift}
+                whileTap={tapShrink}
                 onClick={handleReset}
                 className="flex-1 bg-primary text-on-primary py-3.5 rounded-xl font-bold hover:opacity-90 transition-all active:scale-[0.98] hover:-translate-y-0.5 flex items-center justify-center gap-2"
               >
                 <span className="material-symbols-outlined text-lg">restart_alt</span>
                 Try Another Image
-              </button>
+              </motion.button>
             </div>
           )}
 
@@ -377,8 +479,8 @@ function Scanner() {
                     <ul className="text-sm text-on-surface-variant space-y-1.5 list-disc pl-5">
                       {result.rejection_reason === 'non_electronic' ? (
                         <>
-                          <li>Laptops, desktops, or tablets</li>
-                          <li>Phones, smartwatches, or earbuds</li>
+                          <li>Laptops or desktop computers</li>
+                          <li>Smartphones or smartwatches</li>
                           <li>Monitors, keyboards, or mice</li>
                           <li>Printers, projectors, or routers</li>
                           <li>ACs, TVs, microwaves, or cameras</li>
@@ -399,7 +501,12 @@ function Scanner() {
           )}
 
           {result && !isUnrecognized && (
-            <div className="bg-surface-container-lowest p-6 rounded-xl animate-scale-in-bounce hover-lift card-shadow">
+            <motion.div
+              variants={scaleReveal}
+              initial="hidden"
+              animate="visible"
+              className="bg-surface-container-lowest p-6 rounded-xl animate-scale-in-bounce hover-lift card-shadow"
+            >
               <div className="flex items-center justify-between mb-6">
                 <div className="flex items-center gap-3">
                   <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center">
@@ -439,12 +546,6 @@ function Scanner() {
                   </span>
                 </div>
                 <div className="flex justify-between items-center p-3.5 bg-surface-container rounded-xl">
-                  <span className="text-on-surface-variant text-sm">Hazard Level</span>
-                  <span className={`font-bold ${result.hazard_level === 'Hazardous' ? 'text-error' : 'text-primary'}`}>
-                    {result.hazard_level}
-                  </span>
-                </div>
-                <div className="flex justify-between items-center p-3.5 bg-surface-container rounded-xl">
                   <span className="text-on-surface-variant text-sm">Confidence</span>
                   <div className="flex items-center gap-2">
                     <div className="w-20 h-2 bg-surface-container-highest rounded-full overflow-hidden">
@@ -461,7 +562,7 @@ function Scanner() {
                   </span>
                 </div>
                 <div className="flex justify-between items-center p-3.5 bg-primary/5 border border-primary/20 rounded-xl">
-                  <span className="text-on-surface-variant text-sm">CO₂ Saved by Recycling</span>
+                  <span className="text-on-surface-variant text-sm">Indicative Recovery CO₂ Estimate</span>
                   <span className="font-black text-primary text-lg">{result.co2_delta} kg</span>
                 </div>
               </div>
@@ -473,23 +574,25 @@ function Scanner() {
                 </div>
               )}
 
+              <p className="mt-4 text-xs text-on-surface-variant leading-relaxed">Zero-shot classification has no committed representative real-image benchmark in this repository. Condition is a global-image heuristic, and the CO₂ value is a device-profile planning estimate rather than a measured recycling outcome.</p>
+
               <div className="mt-4 pt-4 border-t border-outline-variant/20 flex items-center justify-between text-xs text-outline">
                 <span>Processing: {result.processing_time}s</span>
                 <span>ID: {result.analysis_id?.slice(0, 8)}</span>
               </div>
-            </div>
+            </motion.div>
           )}
 
           <div className="bg-surface-container-low p-6 rounded-xl hover-lift card-shadow">
             <h3 className="text-lg font-bold text-on-surface mb-4">Supported Devices</h3>
             <div className="flex flex-wrap gap-2">
-              {['Motherboard', 'Hard Disk / SSD', 'Monitor', 'Mouse', 'Keyboard', 'Smartphone', 'Computer', 'Printer', 'Projector', 'Router / Switch', 'Air Conditioner', 'Microwave', 'Television', 'Camera', 'Smartwatch', 'Laptop'].map((cls) => (
+              {['Motherboard', 'Hard Disk / SSD', 'Monitor', 'Mouse', 'Keyboard', 'Smartphone', 'Computer', 'Printer', 'Projector', 'Router / Switch', 'Air Conditioner', 'Microwave', 'Television', 'Camera', 'Smartwatch', 'Laptop', 'Battery', 'Washing Machine', 'Refrigerator', 'Remote Control'].map((cls) => (
                 <span key={cls} className="bg-surface-container-highest px-3 py-1.5 rounded-full text-sm text-on-surface hover:bg-primary hover:text-on-primary transition-all duration-300 cursor-default hover:scale-105 transform">
                   {cls}
                 </span>
               ))}
             </div>
-            <p className="text-xs text-outline mt-3">All categories classified via SigLIP zero-shot vision model — no training required.</p>
+            <p className="text-xs text-outline mt-3">20 canonical categories scored by the selected pre-trained SigLIP 2 or CLIP preset; aliases do not add output classes.</p>
           </div>
 
           <div className="bg-surface-container-low p-6 rounded-xl hover-lift card-shadow">
@@ -516,13 +619,14 @@ function Scanner() {
                 <div className="w-7 h-7 rounded-full bg-primary/10 flex items-center justify-center shrink-0 mt-0.5">
                   <span className="text-xs font-bold text-primary">4</span>
                 </div>
-                <p className="text-sm text-on-surface-variant">Get device details, hazard level, CO₂ impact, and disposal recommendation</p>
+                <p className="text-sm text-on-surface-variant">Get device details, CO₂ impact, and disposal recommendation</p>
               </div>
             </div>
           </div>
         </section>
       </div>
     </div>
+    </AnimatedPage>
   )
 }
 

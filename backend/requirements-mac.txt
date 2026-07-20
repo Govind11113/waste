@@ -1,0 +1,30 @@
+# macOS environment (Python 3.11). This mirrors requirements.txt but uses the
+# native PyTorch wheels rather than Linux-only +cpu build tags.
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.13.2
+PyJWT==2.10.1
+cryptography==46.0.7
+python-dotenv==1.2.2
+
+# Committed sklearn pipelines use NumPy 2's numpy._core pickle paths.
+numpy==2.4.6
+pandas==2.3.3
+scikit-learn==1.8.0
+xgboost==3.2.0
+lightgbm==4.6.0
+
+torch==2.5.1
+torchvision==0.20.1
+transformers==5.13.0
+huggingface-hub==1.22.0
+accelerate==1.14.0
+safetensors==0.8.0
+Pillow==12.2.0
+python-multipart==0.0.6
+requests==2.33.1
+
+# Test and evaluation tooling (kept in the macOS setup as requested).
+pytest==9.1.1
+hypothesis==6.156.1
+httpx==0.27.2

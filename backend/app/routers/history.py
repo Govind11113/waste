@@ -1,13 +1,31 @@
+import os
 from typing import Optional
-from fastapi import APIRouter, Query
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel
+
+from app.auth import get_current_user
 from app.db import (
-    query_history, query_stats, clear_history,
-    query_lifespan_history, query_lifespan_stats, clear_lifespan_history,
-    query_carbon_history, query_carbon_stats, clear_carbon_history,
+    clear_carbon_history,
+    clear_history,
+    clear_lifespan_history,
+    query_carbon_history,
+    query_carbon_stats,
+    query_history,
+    query_lifespan_history,
+    query_lifespan_stats,
+    query_stats,
 )
 
 router = APIRouter(prefix="/history", tags=["History"])
+
+DELETE_API_KEY = os.getenv("DELETE_API_KEY")
+
+
+def require_delete_key(x_delete_key: Optional[str] = Header(default=None)):
+    """Require X-Delete-Key only when the optional server key is configured."""
+    if DELETE_API_KEY and x_delete_key != DELETE_API_KEY:
+        raise HTTPException(status_code=401, detail="Missing or invalid delete key")
 
 
 class HistoryEntry(BaseModel):
@@ -56,6 +74,10 @@ class LifespanHistoryEntry(BaseModel):
     environment: str
     power: str
     maintenance: str
+    software_load: Optional[str] = None
+    normalized_weights: Optional[dict[str, float]] = None
+    model_requested: Optional[str] = None
+    model_used: Optional[str] = None
 
 
 class LifespanHistoryResponse(BaseModel):
@@ -107,67 +129,91 @@ class CarbonStatsResponse(BaseModel):
     total_operational_kg: float
 
 
+# These handlers intentionally use ``def`` rather than ``async def``. FastAPI
+# executes them in its worker threadpool, so synchronous SQLite calls do not
+# block the event loop.
 @router.get("/", response_model=HistoryResponse)
-async def get_history(
+def get_history(
     page: int = Query(1, ge=1),
     per_page: int = Query(10, ge=1, le=100),
     search: Optional[str] = Query(None),
     status: Optional[str] = Query(None),
+    user_id: str = Depends(get_current_user),
 ):
-    items, total = query_history(page=page, per_page=per_page, search=search, status=status)
+    items, total = query_history(
+        page=page,
+        per_page=per_page,
+        search=search,
+        status=status,
+        user_id=user_id,
+    )
     return HistoryResponse(items=items, total=total, page=page, per_page=per_page)
 
 
 @router.get("/stats", response_model=StatsResponse)
-async def get_stats():
-    return StatsResponse(**query_stats())
+def get_stats(user_id: str = Depends(get_current_user)):
+    return StatsResponse(**query_stats(user_id=user_id))
 
 
-@router.delete("/")
-async def delete_history():
-    clear_history()
+@router.delete("/", dependencies=[Depends(require_delete_key)])
+def delete_history(user_id: str = Depends(get_current_user)):
+    clear_history(user_id=user_id)
     return {"ok": True}
 
 
-# ─── Lifespan history ────────────────────────────────────────────────────────
 @router.get("/lifespan", response_model=LifespanHistoryResponse)
-async def get_lifespan_history(
+def get_lifespan_history(
     page: int = Query(1, ge=1),
     per_page: int = Query(10, ge=1, le=100),
     device_type: Optional[str] = Query(None),
+    user_id: str = Depends(get_current_user),
 ):
-    items, total = query_lifespan_history(page=page, per_page=per_page, device_type=device_type)
-    return LifespanHistoryResponse(items=items, total=total, page=page, per_page=per_page)
+    items, total = query_lifespan_history(
+        page=page,
+        per_page=per_page,
+        device_type=device_type,
+        user_id=user_id,
+    )
+    return LifespanHistoryResponse(
+        items=items, total=total, page=page, per_page=per_page
+    )
 
 
 @router.get("/lifespan/stats", response_model=LifespanStatsResponse)
-async def get_lifespan_stats():
-    return LifespanStatsResponse(**query_lifespan_stats())
+def get_lifespan_stats(user_id: str = Depends(get_current_user)):
+    return LifespanStatsResponse(**query_lifespan_stats(user_id=user_id))
 
 
-@router.delete("/lifespan")
-async def delete_lifespan_history():
-    clear_lifespan_history()
+@router.delete("/lifespan", dependencies=[Depends(require_delete_key)])
+def delete_lifespan_history(user_id: str = Depends(get_current_user)):
+    clear_lifespan_history(user_id=user_id)
     return {"ok": True}
 
 
-# ─── Carbon history ─────────────────────────────────────────────────────────
 @router.get("/carbon", response_model=CarbonHistoryResponse)
-async def get_carbon_history(
+def get_carbon_history(
     page: int = Query(1, ge=1),
     per_page: int = Query(10, ge=1, le=100),
     device_type: Optional[str] = Query(None),
+    user_id: str = Depends(get_current_user),
 ):
-    items, total = query_carbon_history(page=page, per_page=per_page, device_type=device_type)
-    return CarbonHistoryResponse(items=items, total=total, page=page, per_page=per_page)
+    items, total = query_carbon_history(
+        page=page,
+        per_page=per_page,
+        device_type=device_type,
+        user_id=user_id,
+    )
+    return CarbonHistoryResponse(
+        items=items, total=total, page=page, per_page=per_page
+    )
 
 
 @router.get("/carbon/stats", response_model=CarbonStatsResponse)
-async def get_carbon_stats():
-    return CarbonStatsResponse(**query_carbon_stats())
+def get_carbon_stats(user_id: str = Depends(get_current_user)):
+    return CarbonStatsResponse(**query_carbon_stats(user_id=user_id))
 
 
-@router.delete("/carbon")
-async def delete_carbon_history():
-    clear_carbon_history()
+@router.delete("/carbon", dependencies=[Depends(require_delete_key)])
+def delete_carbon_history(user_id: str = Depends(get_current_user)):
+    clear_carbon_history(user_id=user_id)
     return {"ok": True}

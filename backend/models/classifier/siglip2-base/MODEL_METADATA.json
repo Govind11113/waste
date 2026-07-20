@@ -1,0 +1,10 @@
+{
+  "formatVersion": 1,
+  "license": "Apache-2.0",
+  "licenseFile": "LICENSE.apache-2.0.txt",
+  "modelPreset": "siglip2-base",
+  "repository": "google/siglip2-base-patch16-224",
+  "revision": "75de2d55ec2d0b4efc50b3e9ad70dba96a7b2fa2",
+  "task": "zero-shot-image-classification",
+  "upstreamModelCard": "https://huggingface.co/google/siglip2-base-patch16-224/tree/75de2d55ec2d0b4efc50b3e9ad70dba96a7b2fa2"
+}

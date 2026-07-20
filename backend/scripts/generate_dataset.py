@@ -1,122 +1,222 @@
-import pandas as pd
+"""
+Synthetic E-Waste Lifespan Dataset Generator (Maharashtra Educational Sector)
+=============================================================================
+
+Generates a reproducible dataset for the device-lifespan prediction models.
+
+The schema matches EXACTLY what the backend (``app/routers/prognosis.py``) and
+the trainer (``scripts/train_lifespan_v2.py``) consume, so the committed models
+are reproducible from the CSV this script writes.
+
+Feature columns (these are the model inputs — fi(M, T, E, U, P, S) from the
+research formula):
+    device_type        T  — type of device
+    manufacturer          — OEM (used as a categorical signal)
+    region                — Maharashtra agro-climatic zone
+    manufacturing_year M  — year of manufacture
+    base_lifespan_yrs     — ideal-condition lifespan for the device type
+    current_age_yrs       — age = current_year - manufacturing_year
+    daily_usage_hrs    U  — hours/day in use
+    temperature        E  — thermal stress (Cool / Normal / Hot)
+    environment        E  — dust/humidity (Clean / Normal / Harsh)
+    power_quality      P  — supply quality (UPS Protected / Direct Grid / Frequent Outages)
+    maintenance        S* — service regularity (Regular / Occasional / None)
+    software_load      S  — workload class (Light / Office / Heavy)
+
+Targets:
+    remaining_life_yrs    — REGRESSION target (remaining useful life, years)
+    failed                — 1 if remaining_life_yrs == 0 else 0
+
+Run:
+    cd backend && python3 scripts/generate_dataset.py            # default 2000 rows
+    cd backend && python3 scripts/generate_dataset.py --rows 5000 --seed 7
+
+Output:
+    backend/data/processed/synthetic/lifespan_dataset.csv
+"""
+
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
 import numpy as np
-import os
-from datetime import datetime
-import joblib
+import pandas as pd
 
-# Target variables
-DEVICE_TYPES = [
-    "Motherboard", "Hard Disk / SSD", "Monitor", "Mouse", 
-    "Keyboard", "Smartphone", "Computer", "Printer", 
-    "Projector", "Router / Switch"
-]
+# Resolve repo paths relative to THIS file so the script is portable
+# (scripts/ -> backend/ -> repo root). No hard-coded user paths.
+BACKEND_DIR = Path(__file__).resolve().parent.parent
+OUT_DIR = BACKEND_DIR / "data" / "processed" / "synthetic"
+OUT_PATH = OUT_DIR / "lifespan_dataset.csv"
 
-# Base lifespan in years under IDEAL conditions
+# ── Device universe (kept in sync with app/device_profiles.py) ──────────────
+# base_lifespan_yrs mirrors DEVICE_PROFILES[...]["base_lifespan"].
 BASE_LIFESPAN = {
-    "Motherboard": 8, "Hard Disk / SSD": 5, "Monitor": 7, 
-    "Mouse": 3, "Keyboard": 4, "Smartphone": 4, 
-    "Computer": 6, "Printer": 5, "Projector": 5, "Router / Switch": 6
+    "Laptop": 5, "Computer": 6, "Smartphone": 4, "Monitor": 7,
+    "Keyboard": 4, "Mouse": 3, "Printer": 5, "Projector": 5,
+    "Router / Switch": 6, "Motherboard": 8, "Hard Disk / SSD": 5,
+    "Air Conditioner": 10, "Television": 8, "Microwave": 8,
+    "Camera": 5, "Smartwatch": 3, "Battery": 3,
+    "Washing Machine": 10, "Refrigerator": 12,
 }
 
-def generate_maharashtra_dataset(num_samples=10000):
-    """
-    Generates a synthetic dataset of IT lab equipment in Maharashtra.
-    Incorporates regional factors like dust, humidity, and power quality.
-    """
-    np.random.seed(42)
-    
-    data = []
-    
-    for _ in range(num_samples):
-        device = np.random.choice(DEVICE_TYPES)
-        base_life = BASE_LIFESPAN[device]
-        
-        # 1. Environmental Factors (Maharashtra Specific)
-        # Rural/Semi-Urban (High Dust, High Temp) vs Coastal (High Humidity)
-        region = np.random.choice(["Vidarbha/Marathwada", "Konkan/Mumbai", "Pune/Nashik"])
-        
-        if region == "Vidarbha/Marathwada":
-            dust_index = np.random.uniform(0.6, 0.95) # High dust
-            humidity_index = np.random.uniform(0.2, 0.5)
-            temp_stress = np.random.uniform(0.7, 1.0) # High summer heat
-        elif region == "Konkan/Mumbai":
-            dust_index = np.random.uniform(0.3, 0.6)
-            humidity_index = np.random.uniform(0.7, 1.0) # Coastal
-            temp_stress = np.random.uniform(0.5, 0.8)
-        else: # Pune/Nashik (Moderate)
-            dust_index = np.random.uniform(0.4, 0.7)
-            humidity_index = np.random.uniform(0.4, 0.7)
-            temp_stress = np.random.uniform(0.4, 0.7)
-            
-        # 2. Operational Factors
-        power_outage_freq = np.random.choice(["Low", "Medium", "High"], p=[0.2, 0.5, 0.3])
-        if power_outage_freq == "High":
-            power_surge_damage = np.random.uniform(0.6, 0.9)
-        elif power_outage_freq == "Medium":
-            power_surge_damage = np.random.uniform(0.3, 0.6)
-        else:
-            power_surge_damage = np.random.uniform(0.0, 0.3)
-            
-        usage_hours_per_day = np.random.uniform(2, 10) # IT Lab usage
-        maintenance_frequency = np.random.choice(["Rare", "Annual", "Biannual"], p=[0.5, 0.3, 0.2])
-        
-        # 3. Calculate Actual Lifespan (The Target Variable)
-        # Formula: Base Life * (Penalty Factors)
-        
-        # Dust kills cooling fans and causes short circuits (especially Motherboards, Projectors)
-        dust_penalty = 1.0 - (dust_index * 0.2) if device in ["Motherboard", "Projector", "Computer"] else 1.0 - (dust_index * 0.05)
-        
-        # Humidity causes corrosion
-        humidity_penalty = 1.0 - (humidity_index * 0.15) if device in ["Motherboard", "Hard Disk / SSD"] else 1.0 - (humidity_index * 0.05)
-        
-        # Power surges kill PSUs and drives
-        power_penalty = 1.0 - (power_surge_damage * 0.3) if device in ["Computer", "Motherboard", "Hard Disk / SSD", "Router / Switch"] else 1.0 - (power_surge_damage * 0.1)
-        
-        # Usage wear and tear
-        usage_penalty = 1.0 - ((usage_hours_per_day - 4) * 0.05) # Assume 4 hours is normal
-        usage_penalty = max(0.5, usage_penalty) # Cap the penalty
-        
-        # Maintenance bonus
-        maint_bonus = 1.2 if maintenance_frequency == "Biannual" else 1.1 if maintenance_frequency == "Annual" else 0.9
-        
-        # Final calculation with some random noise
-        actual_lifespan = base_life * dust_penalty * humidity_penalty * power_penalty * usage_penalty * maint_bonus
-        actual_lifespan = actual_lifespan * np.random.uniform(0.9, 1.1) # Add 10% random variance
-        actual_lifespan = round(max(0.5, min(actual_lifespan, base_life * 1.2)), 2) # Cap limits
-        
-        # Determine Current Age (Randomly distributed between 0 and Actual Lifespan + 2)
-        current_age = round(np.random.uniform(0, actual_lifespan + 1), 2)
-        
-        # Calculate Remaining Useful Life (RUL) -> This is what XGBoost will predict
-        remaining_useful_life = max(0.0, round(actual_lifespan - current_age, 2))
-        
-        # Determine Failure Status
-        is_failed = 1 if remaining_useful_life == 0 else 0
-        
-        data.append({
-            "Device_Type": device,
-            "Region": region,
-            "Base_Lifespan": base_life,
-            "Current_Age_Years": current_age,
-            "Usage_Hours_Per_Day": round(usage_hours_per_day, 1),
-            "Dust_Index": round(dust_index, 2),
-            "Humidity_Index": round(humidity_index, 2),
-            "Temperature_Stress": round(temp_stress, 2),
-            "Power_Outage_Freq": power_outage_freq,
-            "Maintenance_Frequency": maintenance_frequency,
-            "Actual_Total_Lifespan": actual_lifespan,
-            "Remaining_Useful_Life": remaining_useful_life,
-            "Is_Failed": is_failed
+# Plausible OEMs per device family — purely a categorical signal for the model.
+MANUFACTURERS = {
+    "Laptop": ["Dell", "HP", "Lenovo", "Acer", "Asus", "Apple"],
+    "Computer": ["Dell", "HP", "Lenovo", "Acer", "Assembled"],
+    "Smartphone": ["Samsung", "Xiaomi", "Apple", "Realme", "Vivo", "OnePlus"],
+    "Monitor": ["Dell", "LG", "Samsung", "BenQ", "Acer"],
+    "Keyboard": ["Logitech", "Dell", "HP", "Zebronics"],
+    "Mouse": ["Logitech", "Dell", "HP", "Zebronics"],
+    "Printer": ["HP", "Canon", "Epson", "Brother"],
+    "Projector": ["Epson", "BenQ", "ViewSonic", "Sony"],
+    "Router / Switch": ["TP-Link", "D-Link", "Cisco", "Netgear"],
+    "Motherboard": ["Asus", "Gigabyte", "MSI", "Intel"],
+    "Hard Disk / SSD": ["Seagate", "WD", "Samsung", "Crucial"],
+    "Air Conditioner": ["Voltas", "LG", "Daikin", "Blue Star", "Samsung"],
+    "Television": ["Samsung", "LG", "Sony", "Mi", "TCL"],
+    "Microwave": ["LG", "Samsung", "IFB", "Bajaj"],
+    "Camera": ["Canon", "Nikon", "Sony", "Logitech"],
+    "Smartwatch": ["Samsung", "Apple", "Noise", "boAt"],
+    "Battery": ["Exide", "Amaron", "Luminous", "Generic"],
+    "Washing Machine": ["LG", "Samsung", "Whirlpool", "IFB"],
+    "Refrigerator": ["LG", "Samsung", "Whirlpool", "Godrej"],
+}
+
+REGIONS = ["Vidarbha/Marathwada", "Konkan/Mumbai", "Pune/Nashik"]
+
+# Categorical level sets — identical strings to the backend scoring tables in
+# app/routers/prognosis.py so the trained model sees the same vocabulary.
+TEMPERATURE = ["Cool", "Normal", "Hot"]
+ENVIRONMENT = ["Clean", "Normal", "Harsh"]
+POWER_QUALITY = ["UPS Protected", "Direct Grid", "Frequent Outages"]
+MAINTENANCE = ["Regular", "Occasional", "None"]
+SOFTWARE_LOAD = ["Light", "Office", "Heavy"]
+
+# ── Health multipliers (mirror the backend's weighted-average factor scores) ─
+F_USAGE_BANDS = [(4, 1.00), (8, 0.85), (12, 0.70), (24, 0.50)]
+F_TEMP = {"Cool": 0.90, "Normal": 0.75, "Hot": 0.50}
+F_ENV = {"Clean": 0.90, "Normal": 0.70, "Harsh": 0.40}
+F_POWER = {"UPS Protected": 0.90, "Direct Grid": 0.70, "Frequent Outages": 0.45}
+F_MAINT = {"Regular": 0.90, "Occasional": 0.70, "None": 0.50}
+# Software load is the PPT's S factor — heavier workloads shorten life.
+F_SOFTWARE = {"Light": 0.92, "Office": 0.78, "Heavy": 0.55}
+
+# Region priors make the data regionally realistic (Maharashtra zones).
+REGION_PRIORS = {
+    "Vidarbha/Marathwada": {  # hot + dusty interior
+        "temperature": [0.10, 0.35, 0.55],
+        "environment": [0.20, 0.40, 0.40],
+        "power_quality": [0.20, 0.45, 0.35],
+    },
+    "Konkan/Mumbai": {  # humid coastal, better grid
+        "temperature": [0.20, 0.55, 0.25],
+        "environment": [0.30, 0.45, 0.25],
+        "power_quality": [0.45, 0.45, 0.10],
+    },
+    "Pune/Nashik": {  # moderate
+        "temperature": [0.30, 0.50, 0.20],
+        "environment": [0.40, 0.45, 0.15],
+        "power_quality": [0.40, 0.45, 0.15],
+    },
+}
+
+
+def _f_usage(h: float) -> float:
+    for max_hr, score in F_USAGE_BANDS:
+        if h <= max_hr:
+            return score
+    return 0.50
+
+
+def _choice(rng: np.random.Generator, options, p=None):
+    return options[rng.choice(len(options), p=p)]
+
+
+def generate(num_rows: int = 2000, seed: int = 42) -> pd.DataFrame:
+    rng = np.random.default_rng(seed)
+    current_year = 2025  # fixed reference year so the dataset is deterministic
+    devices = list(BASE_LIFESPAN.keys())
+
+    rows = []
+    for _ in range(num_rows):
+        device = _choice(rng, devices)
+        base = BASE_LIFESPAN[device]
+        manufacturer = _choice(rng, MANUFACTURERS[device])
+        region = _choice(rng, REGIONS)
+        priors = REGION_PRIORS[region]
+
+        temperature = _choice(rng, TEMPERATURE, p=priors["temperature"])
+        environment = _choice(rng, ENVIRONMENT, p=priors["environment"])
+        power_quality = _choice(rng, POWER_QUALITY, p=priors["power_quality"])
+        maintenance = _choice(rng, MAINTENANCE, p=[0.30, 0.45, 0.25])
+        software_load = _choice(rng, SOFTWARE_LOAD, p=[0.35, 0.45, 0.20])
+
+        daily_usage = float(np.round(rng.uniform(1.0, 14.0), 1))
+
+        # Age uniformly across (0 .. base + 2) so we see healthy + dead units.
+        current_age = float(np.round(rng.uniform(0.0, base + 2.0), 2))
+        manufacturing_year = int(current_year - round(current_age))
+
+        # Health = weighted average of factor scores (same weights as backend).
+        f_age = max(0.0, 1.0 - current_age / base)
+        health = (
+            0.25 * f_age
+            + 0.20 * _f_usage(daily_usage)
+            + 0.15 * F_TEMP[temperature]
+            + 0.13 * F_POWER[power_quality]
+            + 0.10 * F_ENV[environment]
+            + 0.05 * F_MAINT[maintenance]
+            + 0.12 * F_SOFTWARE[software_load]
+        )
+        health = float(np.clip(health, 0.0, 1.0))
+
+        # Effective achievable lifespan, then remaining = effective - age.
+        effective_lifespan = base * (0.55 + 0.55 * health)  # ranges ~0.55x..1.1x base
+        effective_lifespan *= rng.uniform(0.92, 1.08)  # noise
+        effective_lifespan = min(effective_lifespan, base * 1.15)
+
+        remaining = effective_lifespan - current_age
+        # Clamp to [0, base - age] so we never promise beyond the design life.
+        remaining = max(0.0, min(remaining, max(0.0, base - current_age)))
+        remaining = float(np.round(remaining, 2))
+
+        rows.append({
+            "device_type": device,
+            "manufacturer": manufacturer,
+            "region": region,
+            "manufacturing_year": manufacturing_year,
+            "base_lifespan_yrs": base,
+            "current_age_yrs": current_age,
+            "daily_usage_hrs": daily_usage,
+            "temperature": temperature,
+            "environment": environment,
+            "power_quality": power_quality,
+            "maintenance": maintenance,
+            "software_load": software_load,
+            "remaining_life_yrs": remaining,
+            "failed": int(remaining == 0.0),
         })
-        
-    df = pd.DataFrame(data)
-    
-    # Save the dataset
-    os.makedirs("backend/data/processed/synthetic", exist_ok=True)
-    df.to_csv("backend/data/processed/synthetic/maharashtra_edu_ewaste.csv", index=False)
-    print(f"✅ Generated {num_samples} records and saved to backend/data/processed/synthetic/maharashtra_edu_ewaste.csv")
-    
-    return df
+
+    return pd.DataFrame(rows)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Generate the lifespan dataset.")
+    parser.add_argument("--rows", type=int, default=2000, help="number of rows")
+    parser.add_argument("--seed", type=int, default=42, help="random seed")
+    args = parser.parse_args()
+
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    df = generate(args.rows, args.seed)
+    df.to_csv(OUT_PATH, index=False)
+
+    print(f"Generated {len(df)} rows -> {OUT_PATH}")
+    print(f"  Device types : {df['device_type'].nunique()}")
+    print(f"  Failed units : {df['failed'].sum()} ({df['failed'].mean() * 100:.1f}%)")
+    print(f"  Mean RUL     : {df['remaining_life_yrs'].mean():.2f} yrs")
+    print(f"  Columns      : {list(df.columns)}")
+
 
 if __name__ == "__main__":
-    generate_maharashtra_dataset()
+    main()

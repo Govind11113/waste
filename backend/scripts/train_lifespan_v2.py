@@ -1,24 +1,37 @@
+#!/usr/bin/env python3
+"""Benchmark lifespan estimators on the reproducible synthetic dataset.
+
+Compared methods:
+  * deterministic seven-factor weighted formula (no fitting)
+  * Linear Regression baseline
+  * Random Forest Regressor
+  * XGBoost Regressor
+  * LightGBM Regressor
+
+The dataset and holdout are synthetic. Results show how methods recover the
+synthetic generator's relationships; they are not evidence of accuracy on real
+institutional devices and do not test research hypotheses.
+
+No artifacts are written unless ``--write-artifacts`` is supplied. That explicit
+guard prevents accidental replacement of the committed v2 pipelines.
+
+Run from ``backend/``:
+    python3 scripts/train_lifespan_v2.py
+    python3 scripts/train_lifespan_v2.py --write-artifacts
 """
-Train XGBoost + Random Forest lifespan models on the new corrected dataset.
 
-Target: `remaining_life_yrs` (regression)
-Features: raw inputs ONLY (no pre-computed factors — those would leak the target)
-Compared: XGBoost, Random Forest, Linear Regression baseline, and the v2 formula.
+from __future__ import annotations
 
-Outputs:
-  backend/models/lifespan/xgboost_model.pkl
-  backend/models/lifespan/rf_model.pkl
-  backend/models/lifespan/feature_columns.pkl
-  backend/models/lifespan/training_metrics.json
-"""
-
-import os
+import argparse
+import hashlib
 import json
 import pickle
+from collections.abc import Sequence
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from sklearn.base import clone
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import LinearRegression
@@ -28,12 +41,18 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 from xgboost import XGBRegressor
 
+try:
+    from lightgbm import LGBMRegressor
+except Exception as exc:  # Keep --help/import diagnostics usable with a clear failure.
+    LGBMRegressor = None
+    LIGHTGBM_IMPORT_ERROR = exc
+else:
+    LIGHTGBM_IMPORT_ERROR = None
 
-# ─── Config ────────────────────────────────────────────────────────────────
-DATASET_PATH = "/Users/govindraj/Desktop/ewaste_lifespan_dataset.csv"
-MODEL_DIR = Path("/Users/govindraj/Desktop/E-waste/backend/models/lifespan")
-MODEL_DIR.mkdir(parents=True, exist_ok=True)
-RANDOM_STATE = 42
+BACKEND_DIR = Path(__file__).resolve().parent.parent
+DEFAULT_DATASET = BACKEND_DIR / "data" / "processed" / "synthetic" / "lifespan_dataset.csv"
+DEFAULT_OUTPUT_DIR = BACKEND_DIR / "models" / "lifespan"
+DEFAULT_RANDOM_STATE = 42
 
 CATEGORICAL_FEATURES = [
     "device_type",
@@ -43,6 +62,7 @@ CATEGORICAL_FEATURES = [
     "environment",
     "power_quality",
     "maintenance",
+    "software_load",
 ]
 NUMERIC_FEATURES = [
     "base_lifespan_yrs",
@@ -51,229 +71,321 @@ NUMERIC_FEATURES = [
 ]
 FEATURE_COLUMNS = CATEGORICAL_FEATURES + NUMERIC_FEATURES
 TARGET_COLUMN = "remaining_life_yrs"
+REQUIRED_COLUMNS = set(FEATURE_COLUMNS + [TARGET_COLUMN, "failed"])
+
+# Seven operational factors: age, usage, temperature, power, environment,
+# maintenance/service, and software/workload.
+WEIGHTS = {
+    "age": 0.25,
+    "usage": 0.20,
+    "temperature": 0.15,
+    "power": 0.13,
+    "environment": 0.10,
+    "service": 0.05,
+    "software": 0.12,
+}
+USAGE_BANDS = ((4, 1.00), (8, 0.85), (12, 0.70), (24, 0.50))
+TEMPERATURE_SCORES = {"Cool": 0.90, "Normal": 0.75, "Hot": 0.50}
+ENVIRONMENT_SCORES = {"Clean": 0.90, "Normal": 0.70, "Harsh": 0.40}
+POWER_SCORES = {"UPS Protected": 0.90, "Direct Grid": 0.70, "Frequent Outages": 0.45}
+MAINTENANCE_SCORES = {"Regular": 0.90, "Occasional": 0.70, "No Service": 0.50, "None": 0.50}
+SOFTWARE_SCORES = {"Light": 0.92, "Office": 0.78, "Heavy": 0.55}
+
+ARTIFACT_FILENAMES = (
+    "xgboost_model.pkl",
+    "rf_model.pkl",
+    "lightgbm_model.pkl",
+    "feature_columns.pkl",
+    "categorical_features.pkl",
+    "numeric_features.pkl",
+)
 
 
-# ─── v2 Formula (ground truth for comparison) ──────────────────────────────
-W = {"age": 0.30, "usage": 0.25, "temperature": 0.15, "power": 0.15, "environment": 0.10, "service": 0.05}
-F_USAGE_BANDS = [(4, 1.00), (8, 0.85), (12, 0.70), (24, 0.50)]
-F_TEMP = {"Cool": 0.90, "Normal": 0.75, "Hot": 0.50}
-F_ENV = {"Clean": 0.90, "Normal": 0.70, "Harsh": 0.40}
-F_POWER = {"UPS Protected": 0.90, "Direct Grid": 0.70, "Frequent Outages": 0.45}
-F_MAINT = {"Regular": 0.90, "Occasional": 0.70, "No Service": 0.50, "None": 0.50}
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--dataset",
+        type=Path,
+        default=DEFAULT_DATASET,
+        help=f"input CSV (default: {DEFAULT_DATASET})",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=DEFAULT_OUTPUT_DIR,
+        help=f"artifact directory (default: {DEFAULT_OUTPUT_DIR})",
+    )
+    parser.add_argument("--seed", type=int, default=DEFAULT_RANDOM_STATE, help="split/model random seed")
+    parser.add_argument("--test-size", type=float, default=0.20, help="synthetic holdout fraction")
+    parser.add_argument(
+        "--jobs",
+        type=int,
+        default=1,
+        help="native model worker count; 1 is the deterministic default",
+    )
+    parser.add_argument(
+        "--write-artifacts",
+        action="store_true",
+        help="explicitly replace v2 model/metadata artifacts in --output-dir",
+    )
+    return parser
 
 
-def f_usage(h: float) -> float:
-    for max_hr, score in F_USAGE_BANDS:
-        if h <= max_hr:
+def usage_score(hours: float) -> float:
+    for maximum, score in USAGE_BANDS:
+        if hours <= maximum:
             return score
     return 0.50
 
 
 def predict_formula(row: pd.Series) -> float:
-    base = row["base_lifespan_yrs"]
-    age = row["current_age_yrs"]
-    if age >= base:
+    """Mirror the API's deterministic seven-factor formula baseline."""
+    base = float(row["base_lifespan_yrs"])
+    age = float(row["current_age_yrs"])
+    if base <= 0 or age >= base:
         return 0.0
-    f_age = max(0.0, 1.0 - age / base)
-    f_u = f_usage(row["daily_usage_hrs"])
-    f_t = F_TEMP[row["temperature"]]
-    f_e = F_ENV[row["environment"]]
-    f_p = F_POWER[row["power_quality"]]
-    f_m = F_MAINT[row["maintenance"]]
+    age_score = max(0.0, 1.0 - age / base)
     health = (
-        W["age"] * f_age + W["usage"] * f_u + W["temperature"] * f_t +
-        W["power"] * f_p + W["environment"] * f_e + W["service"] * f_m
+        WEIGHTS["age"] * age_score
+        + WEIGHTS["usage"] * usage_score(float(row["daily_usage_hrs"]))
+        + WEIGHTS["temperature"] * TEMPERATURE_SCORES.get(row["temperature"], 0.75)
+        + WEIGHTS["power"] * POWER_SCORES.get(row["power_quality"], 0.70)
+        + WEIGHTS["environment"] * ENVIRONMENT_SCORES.get(row["environment"], 0.70)
+        + WEIGHTS["service"] * MAINTENANCE_SCORES.get(row["maintenance"], 0.70)
+        + WEIGHTS["software"] * SOFTWARE_SCORES.get(row.get("software_load", "Office"), 0.78)
     )
-    health = max(0.0, min(1.0, health))
-    raw = base * health - age
-    return max(0.0, min(raw, base - age))
+    health = float(np.clip(health, 0.0, 1.0))
+    return max(0.0, min(base * health - age, base - age))
 
 
-# ─── Load data ─────────────────────────────────────────────────────────────
-print("=" * 70)
-print("  E-WASTE LIFESPAN MODEL TRAINING (v2 — corrected dataset)")
-print("=" * 70)
-
-if not os.path.exists(DATASET_PATH):
-    raise FileNotFoundError(f"Dataset not found at {DATASET_PATH}")
-df = pd.read_csv(DATASET_PATH)
-print(f"\n[1/5] Loaded {len(df)} rows from {DATASET_PATH}")
-print(f"      Columns: {list(df.columns[:8])}...")
-print(f"      Device types: {df['device_type'].nunique()} unique")
-print(f"      Manufacturers: {df['manufacturer'].nunique()} unique")
-print(f"      Failed devices: {df['failed'].sum()} ({df['failed'].mean()*100:.1f}%)")
-print(f"      Mean target (remaining_life_yrs): {df[TARGET_COLUMN].mean():.2f}")
+def evaluate(name: str, predictions, truth) -> dict[str, float]:
+    mae = float(mean_absolute_error(truth, predictions))
+    rmse = float(np.sqrt(mean_squared_error(truth, predictions)))
+    r2 = float(r2_score(truth, predictions))
+    print(f"  {name:30s} MAE={mae:.3f}y RMSE={rmse:.3f}y R2={r2:.4f}")
+    return {"mae": round(mae, 3), "rmse": round(rmse, 3), "r2": round(r2, 4)}
 
 
-# ─── Build X, y ────────────────────────────────────────────────────────────
-X = df[FEATURE_COLUMNS].copy()
-y = df[TARGET_COLUMN].astype(float)
-
-# Preprocessor: one-hot for categoricals, pass-through for numerics
-preprocessor = ColumnTransformer(
-    transformers=[
-        ("cat", OneHotEncoder(handle_unknown="ignore", sparse_output=False), CATEGORICAL_FEATURES),
-        ("num", "passthrough", NUMERIC_FEATURES),
-    ],
-    remainder="drop",
-)
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
-# ─── Train/test split ──────────────────────────────────────────────────────
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.20, random_state=RANDOM_STATE
-)
-print(f"\n[2/5] Split: {len(X_train)} train / {len(X_test)} test")
-
-# Fit the preprocessor
-X_train_t = preprocessor.fit_transform(X_train)
-X_test_t = preprocessor.transform(X_test)
-print(f"      Feature matrix shape after encoding: {X_train_t.shape}")
+def display_path(path: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(BACKEND_DIR.resolve()))
+    except ValueError:
+        return str(path.resolve())
 
 
-# ─── Train 3 models ────────────────────────────────────────────────────────
-def evaluate(name, preds, truth):
-    mae = mean_absolute_error(truth, preds)
-    rmse = np.sqrt(mean_squared_error(truth, preds))
-    r2 = r2_score(truth, preds)
-    print(f"   {name:30s}  MAE={mae:.3f}y  RMSE={rmse:.3f}y  R²={r2:.4f}")
-    return {"mae": round(float(mae), 3), "rmse": round(float(rmse), 3), "r2": round(float(r2), 4)}
+def validate_dataset(frame: pd.DataFrame) -> None:
+    missing = sorted(REQUIRED_COLUMNS.difference(frame.columns))
+    if missing:
+        raise ValueError(f"Dataset is missing required columns: {', '.join(missing)}")
+    if frame.empty:
+        raise ValueError("Dataset contains no rows")
+    if frame[FEATURE_COLUMNS + [TARGET_COLUMN]].isnull().any().any():
+        raise ValueError("Dataset contains nulls in required model columns")
 
 
-print("\n[3/5] Training models...")
-print("-" * 70)
-
-# Model 1: Linear Regression (baseline)
-lr = LinearRegression()
-lr.fit(X_train_t, y_train)
-lr_preds = lr.predict(X_test_t)
-lr_preds_clipped = np.clip(lr_preds, 0, None)  # life can't be negative
-lr_metrics = evaluate("Linear Regression", lr_preds_clipped, y_test)
-
-# Model 2: Random Forest
-rf = RandomForestRegressor(
-    n_estimators=200,
-    max_depth=12,
-    min_samples_leaf=2,
-    random_state=RANDOM_STATE,
-    n_jobs=-1,
-)
-rf.fit(X_train_t, y_train)
-rf_preds = rf.predict(X_test_t)
-rf_preds_clipped = np.clip(rf_preds, 0, None)
-rf_metrics = evaluate("Random Forest", rf_preds_clipped, y_test)
-
-# Model 3: XGBoost
-xgb = XGBRegressor(
-    n_estimators=300,
-    max_depth=6,
-    learning_rate=0.08,
-    subsample=0.85,
-    colsample_bytree=0.85,
-    reg_alpha=0.1,
-    reg_lambda=1.0,
-    random_state=RANDOM_STATE,
-    n_jobs=-1,
-    verbosity=0,
-)
-xgb.fit(X_train_t, y_train)
-xgb_preds = xgb.predict(X_test_t)
-xgb_preds_clipped = np.clip(xgb_preds, 0, None)
-xgb_metrics = evaluate("XGBoost", xgb_preds_clipped, y_test)
-
-# Model 4: v2 Formula (no training — pure math)
-formula_preds = X_test.apply(predict_formula, axis=1).values
-formula_metrics = evaluate("v2 Formula (no training)", formula_preds, y_test)
+def build_preprocessor() -> ColumnTransformer:
+    return ColumnTransformer(
+        transformers=[
+            (
+                "cat",
+                OneHotEncoder(handle_unknown="ignore", sparse_output=False),
+                CATEGORICAL_FEATURES,
+            ),
+            ("num", "passthrough", NUMERIC_FEATURES),
+        ],
+        remainder="drop",
+    )
 
 
-# ─── Pick winner ───────────────────────────────────────────────────────────
-print("\n[4/5] Selecting best model (by R²)...")
-candidates = {
-    "xgboost": (xgb_metrics["r2"], xgb_metrics, xgb, "xgb"),
-    "random_forest": (rf_metrics["r2"], rf_metrics, rf, "rf"),
-    "linear_regression": (lr_metrics["r2"], lr_metrics, lr, "lr"),
-}
-best_name = max(candidates, key=lambda k: candidates[k][0])
-best_r2, best_metrics, best_model, best_kind = candidates[best_name]
-print(f"   Best model: {best_name}  (R²={best_r2:.4f})")
+def write_pickle(path: Path, value) -> None:
+    with path.open("wb") as handle:
+        pickle.dump(value, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
 
-# ─── Save artifacts ────────────────────────────────────────────────────────
-print(f"\n[5/5] Saving artifacts to {MODEL_DIR}...")
+def main(argv: Sequence[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    if not 0.0 < args.test_size < 1.0:
+        raise ValueError("--test-size must be between 0 and 1")
+    if args.jobs < 1:
+        raise ValueError("--jobs must be at least 1")
+    if LGBMRegressor is None:
+        raise RuntimeError(
+            "LightGBM is required for the declared comparison. Install the pinned "
+            f"requirements first. Import error: {LIGHTGBM_IMPORT_ERROR}"
+        )
 
-# Full pipelines (preprocessor + model) so a single pickle holds everything
-xgb_pipeline = Pipeline([("prep", preprocessor), ("model", xgb)])
-rf_pipeline = Pipeline([("prep", preprocessor), ("model", rf)])
+    dataset_path = args.dataset.expanduser().resolve()
+    output_dir = args.output_dir.expanduser().resolve()
+    if not dataset_path.is_file():
+        raise FileNotFoundError(
+            f"Dataset not found: {dataset_path}\n"
+            "Generate the default synthetic CSV with: python3 scripts/generate_dataset.py"
+        )
 
-# Refit on full data so the saved models use 100% of the training data
-xgb_pipeline.fit(X, y)
-rf_pipeline.fit(X, y)
+    # "None" is a valid maintenance category, so disable pandas' default NA
+    # token conversion rather than silently turning that level into NaN.
+    frame = pd.read_csv(dataset_path, keep_default_na=False)
+    validate_dataset(frame)
+    features = frame[FEATURE_COLUMNS].copy()
+    target = frame[TARGET_COLUMN].astype(float)
 
-with open(MODEL_DIR / "xgboost_model.pkl", "wb") as f:
-    pickle.dump(xgb_pipeline, f)
-with open(MODEL_DIR / "rf_model.pkl", "wb") as f:
-    pickle.dump(rf_pipeline, f)
-with open(MODEL_DIR / "feature_columns.pkl", "wb") as f:
-    pickle.dump(FEATURE_COLUMNS, f)
-with open(MODEL_DIR / "categorical_features.pkl", "wb") as f:
-    pickle.dump(CATEGORICAL_FEATURES, f)
-with open(MODEL_DIR / "numeric_features.pkl", "wb") as f:
-    pickle.dump(NUMERIC_FEATURES, f)
+    print("=" * 76)
+    print("E-WASTE LIFESPAN ESTIMATOR BENCHMARK (SYNTHETIC DATA ONLY)")
+    print("=" * 76)
+    print(f"Dataset: {display_path(dataset_path)}")
+    print(f"Rows: {len(frame)}")
+    print(f"Device types represented: {frame['device_type'].nunique()}")
+    print("Evidence boundary: no real institutional observations are evaluated.")
 
-metrics_path = MODEL_DIR / "training_metrics.json"
-metrics = {
-    "dataset_path": DATASET_PATH,
-    "n_rows": len(df),
-    "n_features_after_encoding": int(X_train_t.shape[1]),
-    "train_size": len(X_train),
-    "test_size": len(X_test),
-    "models": {
-        "linear_regression": lr_metrics,
-        "random_forest": rf_metrics,
-        "xgboost": xgb_metrics,
-        "v2_formula": formula_metrics,
-    },
-    "best_model": best_name,
-    "feature_columns": FEATURE_COLUMNS,
-    "target": TARGET_COLUMN,
-}
-with open(metrics_path, "w") as f:
-    json.dump(metrics, f, indent=2)
+    train_x, test_x, train_y, test_y = train_test_split(
+        features,
+        target,
+        test_size=args.test_size,
+        random_state=args.seed,
+    )
+    preprocessor = build_preprocessor()
+    train_encoded = preprocessor.fit_transform(train_x)
+    test_encoded = preprocessor.transform(test_x)
+    print(f"Synthetic split: {len(train_x)} train / {len(test_x)} test")
+    print(f"Encoded feature columns: {train_encoded.shape[1]}")
+
+    linear = LinearRegression()
+    random_forest = RandomForestRegressor(
+        n_estimators=300,
+        max_depth=14,
+        min_samples_leaf=2,
+        random_state=args.seed,
+        n_jobs=args.jobs,
+    )
+    xgboost = XGBRegressor(
+        n_estimators=400,
+        max_depth=6,
+        learning_rate=0.06,
+        subsample=0.85,
+        colsample_bytree=0.85,
+        reg_alpha=0.1,
+        reg_lambda=1.0,
+        random_state=args.seed,
+        n_jobs=args.jobs,
+        verbosity=0,
+    )
+    lightgbm = LGBMRegressor(
+        n_estimators=400,
+        max_depth=-1,
+        num_leaves=31,
+        learning_rate=0.05,
+        subsample=0.85,
+        subsample_freq=1,
+        colsample_bytree=0.85,
+        random_state=args.seed,
+        n_jobs=args.jobs,
+        deterministic=True,
+        force_col_wise=True,
+        verbosity=-1,
+    )
+
+    print("\nSynthetic holdout comparison:")
+    model_metrics: dict[str, dict[str, float]] = {}
+    for key, label, model in (
+        ("linear_regression", "Linear Regression", linear),
+        ("random_forest", "Random Forest", random_forest),
+        ("xgboost", "XGBoost", xgboost),
+        ("lightgbm", "LightGBM", lightgbm),
+    ):
+        model.fit(train_encoded, train_y)
+        predictions = np.clip(model.predict(test_encoded), 0, None)
+        model_metrics[key] = evaluate(label, predictions, test_y)
+
+    formula_predictions = test_x.apply(predict_formula, axis=1).to_numpy()
+    model_metrics["seven_factor_formula"] = evaluate(
+        "Seven-factor formula (unfit)", formula_predictions, test_y
+    )
+
+    trained_keys = ("linear_regression", "random_forest", "xgboost", "lightgbm")
+    best_model = max(trained_keys, key=lambda key: model_metrics[key]["r2"])
+
+    category_names = preprocessor.named_transformers_["cat"].get_feature_names_out(
+        CATEGORICAL_FEATURES
+    )
+    encoded_names = list(category_names) + NUMERIC_FEATURES
+    top_importances_frame = (
+        pd.DataFrame(
+            {"feature": encoded_names, "importance": xgboost.feature_importances_}
+        )
+        .sort_values(("importance"), ascending=False)
+        .head(15)
+    )
+    top_importances = [
+        {"feature": str(row.feature), "importance": round(float(row.importance), 8)}
+        for row in top_importances_frame.itertuples(index=False)
+    ]
+
+    metrics = {
+        "dataset_kind": "synthetic",
+        "evidence_boundary": (
+            "Holdout rows come from the same synthetic generator; these metrics do "
+            "not establish real-world predictive validity or test hypotheses."
+        ),
+        "dataset_path": display_path(dataset_path),
+        "n_rows": int(len(frame)),
+        "device_types_represented": int(frame["device_type"].nunique()),
+        "n_features_after_encoding": int(train_encoded.shape[1]),
+        "train_size": int(len(train_x)),
+        "test_size": int(len(test_x)),
+        "random_state": int(args.seed),
+        "models": model_metrics,
+        "best_model_on_synthetic_holdout": best_model,
+        "feature_columns": FEATURE_COLUMNS,
+        "target": TARGET_COLUMN,
+        "xgboost_top_feature_importances": top_importances,
+    }
+
+    print(f"\nBest trained method on this synthetic holdout: {best_model}")
+    print("Do not present that ordering or the scores as validation on real devices.")
+
+    if not args.write_artifacts:
+        print("\nNo artifacts written. Pass --write-artifacts to replace v2 outputs explicitly.")
+        return 0
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    def save_pipeline(model, filename: str) -> None:
+        pipeline = Pipeline(
+            [("prep", clone(build_preprocessor())), ("model", clone(model))]
+        )
+        pipeline.fit(features, target)
+        write_pickle(output_dir / filename, pipeline)
+
+    save_pipeline(xgboost, "xgboost_model.pkl")
+    save_pipeline(random_forest, "rf_model.pkl")
+    save_pipeline(lightgbm, "lightgbm_model.pkl")
+    write_pickle(output_dir / "feature_columns.pkl", FEATURE_COLUMNS)
+    write_pickle(output_dir / "categorical_features.pkl", CATEGORICAL_FEATURES)
+    write_pickle(output_dir / "numeric_features.pkl", NUMERIC_FEATURES)
+
+    with (output_dir / "training_metrics.json").open("w", encoding="utf-8") as handle:
+        json.dump(metrics, handle, indent=2)
+        handle.write("\n")
+
+    manifest = {
+        filename: sha256(output_dir / filename) for filename in ARTIFACT_FILENAMES
+    }
+    with (output_dir / "model_manifest.json").open("w", encoding="utf-8") as handle:
+        json.dump(manifest, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+
+    print(f"\nWrote v2 artifacts to: {display_path(output_dir)}")
+    print("The manifest contains only artifacts produced by this v2 trainer.")
+    return 0
 
 
-# ─── Feature importance (XGBoost) ──────────────────────────────────────────
-cat_features = preprocessor.named_transformers_["cat"].get_feature_names_out(CATEGORICAL_FEATURES)
-all_features = list(cat_features) + NUMERIC_FEATURES
-importances = xgb.feature_importances_
-imp_df = pd.DataFrame({"feature": all_features, "importance": importances})
-imp_df = imp_df.sort_values("importance", ascending=False).head(15)
-
-print("\n" + "=" * 70)
-print("  TOP-15 FEATURE IMPORTANCES (XGBoost)")
-print("=" * 70)
-for _, row in imp_df.iterrows():
-    bar = "█" * int(row["importance"] * 100)
-    print(f"   {row['feature']:42s}  {row['importance']:.4f}  {bar}")
-
-
-# ─── Final summary ─────────────────────────────────────────────────────────
-print("\n" + "=" * 70)
-print("  TRAINING COMPLETE")
-print("=" * 70)
-print(f"   Best model:        {best_name}")
-print(f"   Best R²:           {best_r2:.4f}")
-print(f"   Best MAE:          {best_metrics['mae']:.3f} years")
-print(f"   Best RMSE:         {best_metrics['rmse']:.3f} years")
-print(f"\n   Saved to:")
-print(f"     {MODEL_DIR / 'xgboost_model.pkl'}")
-print(f"     {MODEL_DIR / 'rf_model.pkl'}")
-print(f"     {MODEL_DIR / 'feature_columns.pkl'}")
-print(f"     {MODEL_DIR / 'training_metrics.json'}")
-print(f"\n   Comparison table:")
-print(f"     {'Model':<28} {'MAE':>8} {'RMSE':>8} {'R²':>8}")
-print(f"     {'-'*28} {'-'*8} {'-'*8} {'-'*8}")
-for name, m in [("Linear Regression", lr_metrics),
-                ("Random Forest", rf_metrics),
-                ("XGBoost", xgb_metrics),
-                ("v2 Formula (no training)", formula_metrics)]:
-    print(f"     {name:<28} {m['mae']:>8.3f} {m['rmse']:>8.3f} {m['r2']:>8.4f}")
+if __name__ == "__main__":
+    raise SystemExit(main())

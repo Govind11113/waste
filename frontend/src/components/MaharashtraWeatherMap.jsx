@@ -1,7 +1,19 @@
 import { useEffect, useState, useMemo } from 'react'
+import { motion, useReducedMotion } from 'framer-motion'
 import { MapContainer, TileLayer, GeoJSON, CircleMarker, Popup, Tooltip, ZoomControl } from 'react-leaflet'
-import L from 'leaflet'
 import mhGeoJson from '../data/maharashtra.geojson?url'
+import { scaleReveal } from '../utils/motion'
+
+/**
+ * @typedef {{
+ *   temperature_2m: number,
+ *   relative_humidity_2m: number,
+ *   weather_code: number,
+ *   wind_speed_10m?: number,
+ *   apparent_temperature?: number,
+ * }} WeatherReading
+ * @typedef {'street' | 'terrain' | 'light'} TileStyle
+ */
 
 const CITIES = [
   { name: 'Mumbai',     lat: 19.0760, lon: 72.8777, type: 'Metro' },
@@ -15,6 +27,7 @@ const CITIES = [
   { name: 'Thane',      lat: 19.2183, lon: 72.9781, type: 'Konkan' },
 ]
 
+/** @type {Record<number, string>} */
 const WEATHER_DESCRIPTIONS = {
   0: 'Clear', 1: 'Mostly Clear', 2: 'Partly Cloudy', 3: 'Overcast',
   45: 'Foggy', 48: 'Foggy', 51: 'Light Drizzle', 53: 'Drizzle', 55: 'Heavy Drizzle',
@@ -23,6 +36,7 @@ const WEATHER_DESCRIPTIONS = {
   95: 'Thunderstorm', 96: 'Thunderstorm', 99: 'Severe Thunderstorm',
 }
 
+/** @type {Record<number, string>} */
 const WEATHER_ICONS = {
   0: 'wb_sunny', 1: 'wb_sunny', 2: 'partly_cloudy_day', 3: 'cloud',
   45: 'foggy', 48: 'foggy', 51: 'rainy', 53: 'rainy', 55: 'rainy',
@@ -31,6 +45,7 @@ const WEATHER_ICONS = {
   95: 'thunderstorm', 96: 'thunderstorm', 99: 'thunderstorm',
 }
 
+/** @param {number | null | undefined} t */
 function tempColor(t) {
   if (t == null) return '#9ca3af'
   if (t >= 38) return '#dc2626'
@@ -40,6 +55,7 @@ function tempColor(t) {
   return '#0284c7'
 }
 
+/** @param {number | null | undefined} t */
 function tempBand(t) {
   if (t == null) return 'Loading'
   if (t >= 38) return 'Extreme Heat'
@@ -50,43 +66,69 @@ function tempBand(t) {
 }
 
 function MaharashtraWeatherMap({ compact = false }) {
-  const [weather, setWeather] = useState({})
+  const [weather, setWeather] = useState(/** @type {Record<string, WeatherReading>} */ ({}))
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(null)
-  const [geoData, setGeoData] = useState(null)
-  const [tileStyle, setTileStyle] = useState('street')
+  const [error, setError] = useState(/** @type {string | null} */ (null))
+  const [warning, setWarning] = useState(/** @type {string | null} */ (null))
+  const [geoData, setGeoData] = useState(/** @type {import('geojson').FeatureCollection | null} */ (null))
+  const [tileStyle, setTileStyle] = useState(/** @type {TileStyle} */ ('street'))
 
   useEffect(() => {
-    fetch(mhGeoJson)
-      .then(r => r.json())
+    const controller = new AbortController()
+    fetch(mhGeoJson, { signal: controller.signal })
+      .then((response) => {
+        if (!response.ok) throw new Error('Boundary data unavailable')
+        return response.json()
+      })
       .then(setGeoData)
-      .catch(() => {})
+      .catch((caught) => {
+        if (!(caught instanceof DOMException && caught.name === 'AbortError')) {
+          setWarning('The Maharashtra boundary overlay could not be loaded.')
+        }
+      })
+    return () => controller.abort()
   }, [])
 
   useEffect(() => {
-    let cancelled = false
+    const controller = new AbortController()
+
     const fetchAll = async () => {
-      try {
-        const results = await Promise.all(CITIES.map(async (city) => {
-          const url = `https://api.open-meteo.com/v1/forecast?latitude=${city.lat}&longitude=${city.lon}&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m,apparent_temperature&timezone=Asia%2FKolkata`
-          const res = await fetch(url)
-          if (!res.ok) throw new Error('weather fetch failed')
-          const data = await res.json()
-          return [city.name, data.current]
-        }))
-        if (!cancelled) {
-          setWeather(Object.fromEntries(results))
-          setLoading(false)
-        }
-      } catch (e) {
-        if (!cancelled) {
-          setError('Live weather temporarily unavailable')
-          setLoading(false)
+      const settled = await Promise.allSettled(CITIES.map(async (city) => {
+        const url = `https://api.open-meteo.com/v1/forecast?latitude=${city.lat}&longitude=${city.lon}&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m,apparent_temperature&timezone=Asia%2FKolkata`
+        const response = await fetch(url, { signal: controller.signal })
+        if (!response.ok) throw new Error(`Weather unavailable for ${city.name}`)
+        const data = await response.json()
+        return [city.name, data.current]
+      }))
+
+      if (controller.signal.aborted) return
+      const successful = settled
+        .filter((item) => item.status === 'fulfilled')
+        .map((item) => item.value)
+      const failedCount = settled.length - successful.length
+
+      if (successful.length === 0) {
+        setError(null)
+        setWarning('Live weather is unavailable. The Maharashtra map and city locations remain available.')
+        setWeather({})
+      } else {
+        setWeather(Object.fromEntries(successful))
+        if (failedCount > 0) {
+          setWarning(`Live weather is available for ${successful.length} of ${CITIES.length} cities.`)
         }
       }
+      setLoading(false)
     }
-    fetchAll()
-    return () => { cancelled = true }
+
+    fetchAll().catch((caught) => {
+      if (controller.signal.aborted) return
+      const detail = caught instanceof Error ? caught.message : 'Live weather temporarily unavailable'
+      setError(null)
+      setWarning(`${detail}. The map remains available without live readings.`)
+      setWeather({})
+      setLoading(false)
+    })
+    return () => controller.abort()
   }, [])
 
   const avgTemp = useMemo(() => {
@@ -132,6 +174,7 @@ function MaharashtraWeatherMap({ compact = false }) {
     dashArray: '0',
   }
 
+  /** @type {Record<TileStyle, { url: string, attribution: string }>} */
   const tileConfigs = {
     street: {
       url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
@@ -148,8 +191,18 @@ function MaharashtraWeatherMap({ compact = false }) {
   }
   const activeTile = tileConfigs[tileStyle]
 
+  const reduce = useReducedMotion()
+  const containerVariants = reduce
+    ? { hidden: { opacity: 1 }, visible: { opacity: 1 } }
+    : scaleReveal
+
   return (
-    <div className="bg-surface-container-lowest rounded-xl p-6 hover-lift card-shadow">
+    <motion.div
+      variants={containerVariants}
+      initial="hidden"
+      animate="visible"
+      className="bg-surface-container-lowest rounded-xl p-6 hover-lift card-shadow"
+    >
       <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
         <div>
           <h3 className="text-xl font-bold text-on-surface flex items-center gap-2">
@@ -158,7 +211,7 @@ function MaharashtraWeatherMap({ compact = false }) {
           </h3>
           <p className="text-sm text-on-surface-variant mt-1">Real-time conditions across {CITIES.length} cities — Open-Meteo + OpenStreetMap</p>
         </div>
-        {avgTemp != null && (
+        {avgTemp != null && avgHumidity != null && (
           <div className="flex gap-2 flex-wrap">
             <div className="bg-surface-container rounded-lg px-3 py-2 text-center min-w-[80px]">
               <p className="text-[10px] text-on-surface-variant uppercase tracking-wider">Avg Temp</p>
@@ -193,10 +246,18 @@ function MaharashtraWeatherMap({ compact = false }) {
         </div>
       ) : (
         <>
-          <div className="flex gap-2 mb-3 flex-wrap">
-            {Object.keys(tileConfigs).map(k => (
+          {warning && (
+            <div role="status" className="mb-4 p-3 bg-tertiary/10 border border-tertiary/30 rounded-xl text-sm text-on-surface flex items-center gap-2">
+              <span className="material-symbols-outlined text-tertiary" aria-hidden="true">info</span>
+              {warning}
+            </div>
+          )}
+          <div className="flex gap-2 mb-3 flex-wrap" role="group" aria-label="Map background style">
+            {(/** @type {TileStyle[]} */ (Object.keys(tileConfigs))).map(k => (
               <button
                 key={k}
+                type="button"
+                aria-pressed={tileStyle === k}
                 onClick={() => setTileStyle(k)}
                 className={`px-3 py-1.5 rounded-full text-xs font-bold uppercase tracking-wider transition-all ${
                   tileStyle === k ? 'bg-primary text-on-primary shadow-md' : 'bg-surface-container text-on-surface-variant hover:bg-surface-container-high'
@@ -318,7 +379,7 @@ function MaharashtraWeatherMap({ compact = false }) {
           </div>
         </>
       )}
-    </div>
+    </motion.div>
   )
 }
 

@@ -4,8 +4,11 @@ __pycache__/
 *$py.class
 *.so
 .Python
+.pytest_cache/
 env/
 venv/
+.venv/
+.venv-test/
 ENV/
 build/
 develop-eggs/
@@ -36,13 +39,18 @@ yarn-error.log*
 
 # Model cache (ignore generated cache, NOT trained models)
 backend/cache/
-# Note: trained models in backend/models/ are tracked
-# Generated training artifacts (rebuildable from scripts)
-backend/models/lifespan/categorical_features.pkl
-backend/models/lifespan/feature_columns.pkl
-backend/models/lifespan/numeric_features.pkl
-backend/models/lifespan/training_metrics.json
-backend/data/processed/synthetic/lifespan_dataset.csv
+# Note: core runtime models are tracked so the app + thesis are reproducible:
+#   lifespan: xgboost_model, rf_model, lightgbm_model, feature_columns,
+#             categorical_features, numeric_features, training_metrics.json,
+#             model_manifest.json  AND the dataset they were trained on.
+# The pinned image-classifier snapshot is committed through Git LFS under
+# backend/models/classifier so clones can build the offline Windows release.
+# Legacy classifier weights (zero-shot replaced the old ResNet model)
+backend/models/latest/
+# Bootstrap/synthetic IMAGE dataset is large + regenerable via
+# scripts/fetch_image_dataset.py — keep it out of git. Replace with real
+# institutional photos locally for thesis-grade accuracy.
+backend/data/images/
 
 # Database
 *.db
@@ -56,6 +64,7 @@ backend_log.txt
 .env
 .env.local
 .env.*.local
+frontend/.env
 
 # IDE
 .idea/
@@ -69,6 +78,16 @@ backend/server.pid
 # AI agent config
 .claude/
 .gemini/
+.kiro/
 
 # Project review artifacts
 Project_Review.pdf
+
+# Generated Windows release outputs
+release/
+
+# Generated frontend test output and reusable auth state
+frontend/test-results/
+frontend/playwright-report/
+frontend/coverage/
+frontend/playwright-auth.json

@@ -144,6 +144,8 @@ def test_single_origin_app_serves_spa_and_keeps_api_404(tmp_path, monkeypatch):
         assert "immutable" in asset.headers["cache-control"]
         assert client.get("/favicon.svg").status_code == 200
         assert client.get("/assets/missing.js").status_code == 404
+        assert client.get("/api").status_code == 404
+        assert client.get("/health").status_code == 404
         assert client.get("/api/does-not-exist").status_code == 404
 
 

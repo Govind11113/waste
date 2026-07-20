@@ -230,7 +230,9 @@ def create_app(
 
         @application.get("/{full_path:path}", include_in_schema=False)
         async def serve_spa(full_path: str):
-            if full_path.startswith(("api/", "health/", "docs", "openapi.json", "redoc")):
+            if full_path in {"api", "health", "docs", "redoc", "openapi.json"} or full_path.startswith(
+                ("api/", "health/", "docs/", "redoc/")
+            ):
                 raise HTTPException(status_code=404, detail="Not found")
 
             if full_path:

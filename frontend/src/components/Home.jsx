@@ -38,12 +38,6 @@ function Home() {
       link: '/inventory',
     },
     {
-      icon: 'timeline',
-      title: 'Cohort Forecast',
-      description: 'Project submitted in-service cohorts with a disclosed, uncalibrated conditional Weibull curve.',
-      link: '/generation',
-    },
-    {
       icon: 'history',
       title: 'Activity History',
       description: 'Review your authenticated scan, lifespan, and carbon calculation records.',
@@ -62,7 +56,7 @@ function Home() {
               <span className="text-primary">Maharashtra Education</span>
             </h1>
             <p className="text-xl text-on-surface-variant mb-8 leading-relaxed">
-              Explore transparent workflows for classifying device images, estimating lifespan and carbon scenarios, and projecting submitted inventory cohorts.
+              Explore transparent workflows for classifying device images and estimating lifespan and carbon scenarios.
             </p>
             <div className="flex flex-wrap gap-4">
               <Link to="/signup" className="bg-primary text-on-primary px-8 py-4 rounded-xl font-bold text-lg hover:opacity-90 transition-all shadow-lg shadow-primary/20 hover:-translate-y-0.5 hover:shadow-xl active:scale-[0.98] btn-ripple">
@@ -82,7 +76,7 @@ function Home() {
         <section className="mb-20 animate-fade-in-up" style={{ animationDelay: '0.2s' }}>
           <h2 className="text-3xl font-bold text-on-surface mb-3">Implemented Capabilities</h2>
           <p className="text-on-surface-variant mb-10">Each workflow labels its assumptions and keeps calculated outputs separate from observed evidence.</p>
-          <motion.div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-6" variants={stagger} initial="hidden" animate="visible">
+          <motion.div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6" variants={stagger} initial="hidden" animate="visible">
             {features.map((feature, index) => (
               <MotionLink
                 key={feature.title}
@@ -114,12 +108,12 @@ function Home() {
             <div className="bg-surface-container-lowest rounded-xl p-7 card-shadow">
               <span className="material-symbols-outlined text-3xl text-primary mb-3" aria-hidden="true">inventory_2</span>
               <h3 className="text-lg font-bold text-on-surface mb-2">Supply real inventory inputs</h3>
-              <p className="text-sm text-on-surface-variant leading-relaxed">Forecasts describe only the cohorts submitted by the user. They do not estimate a statewide total or add future purchases.</p>
+              <p className="text-sm text-on-surface-variant leading-relaxed">Outputs reflect only the devices and inputs supplied by the user. They do not estimate statewide totals.</p>
             </div>
             <div className="bg-surface-container-lowest rounded-xl p-7 card-shadow">
               <span className="material-symbols-outlined text-3xl text-secondary mb-3" aria-hidden="true">science</span>
               <h3 className="text-lg font-bold text-on-surface mb-2">Validate before research claims</h3>
-              <p className="text-sm text-on-surface-variant leading-relaxed">Classifier, lifespan, carbon, and cohort outputs require appropriate real data before accuracy or impact claims can be made.</p>
+              <p className="text-sm text-on-surface-variant leading-relaxed">Classifier, lifespan, and carbon outputs require appropriate real data before accuracy or impact claims can be made.</p>
             </div>
             <div className="bg-surface-container-lowest rounded-xl p-7 card-shadow">
               <span className="material-symbols-outlined text-3xl text-tertiary mb-3" aria-hidden="true">fact_check</span>

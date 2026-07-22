@@ -11,7 +11,6 @@ const APP_LINKS = [
   { to: '/scanner', label: 'Classifier' },
   { to: '/lifespan', label: 'Lifespan' },
   { to: '/inventory', label: 'Carbon' },
-  { to: '/generation', label: 'Forecast' },
   { to: '/history', label: 'History' },
 ]
 

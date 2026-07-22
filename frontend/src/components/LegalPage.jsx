@@ -28,7 +28,6 @@ const PAGES = {
       ['Image classification', 'A three-stage pipeline applies deterministic image-quality checks, a vision-language electronics gate, and zero-shot scoring across 20 canonical device categories using the selected SigLIP 2 or CLIP preset.'],
       ['Lifespan estimate', 'The default result is a seven-factor weighted formula covering age, usage, temperature, power quality, environment, maintenance, and software/workload. The displayed range is scenario sensitivity, not a calibrated confidence interval.'],
       ['Carbon calculation', 'Embodied profile values are added to deterministic operational electricity estimates using submitted power, hours, rating, units, lifespan, and a postal-code grid-intensity lookup. Results are planning estimates, not certified life-cycle assessments.'],
-      ['Generation forecast', 'Submitted in-service cohorts are projected with a fixed conditional Weibull curve. No observed retirement series is fitted, future purchases are not added, and projected end of life is not the same as collected waste.'],
     ],
   },
 }

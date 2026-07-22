@@ -16,12 +16,14 @@ const policyCases = [
 ]
 
 describe('configuration and policy pages', () => {
-  it('shows actionable Windows setup guidance instead of a blank page', () => {
+  it('shows actionable cross-platform setup guidance instead of a blank page', () => {
     render(<ConfigurationError message="Missing public authentication configuration" />)
 
-    expect(screen.getByRole('alert')).toHaveTextContent('not configured yet')
-    expect(screen.getByRole('alert')).toHaveTextContent('Configure E-Waste.cmd')
-    expect(screen.getByRole('alert')).toHaveTextContent('pk_test_')
+    const alert = screen.getByRole('alert')
+    expect(alert).toHaveTextContent('not configured yet')
+    expect(alert).toHaveTextContent('backend/.env')
+    expect(alert).toHaveTextContent('frontend/.env')
+    expect(alert).toHaveTextContent('pk_test_')
     expect(screen.getByRole('button', { name: 'Retry configuration' })).toBeEnabled()
   })
 

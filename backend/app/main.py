@@ -34,7 +34,7 @@ from app.auth import get_current_user  # noqa: E402
 from app.db import database_healthcheck, init_db  # noqa: E402
 from app.logging_config import get_logger  # noqa: E402
 from app.model import model_load_status  # noqa: E402
-from app.routers import classifier, carbon, generation, history, prognosis  # noqa: E402
+from app.routers import classifier, carbon, history, prognosis  # noqa: E402
 
 logger = get_logger("ewaste.main")
 _auth = [Depends(get_current_user)]
@@ -151,7 +151,6 @@ def create_app(
         return response
 
     application.include_router(prognosis.router, prefix="/api/v1", dependencies=_auth)
-    application.include_router(generation.router, prefix="/api/v1", dependencies=_auth)
     application.include_router(carbon.router, prefix="/api/v1", dependencies=_auth)
     application.include_router(classifier.router, prefix="/api/v1", dependencies=_auth)
     application.include_router(history.router, prefix="/api/v1", dependencies=_auth)

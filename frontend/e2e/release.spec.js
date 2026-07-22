@@ -33,7 +33,6 @@ test.describe('configured single-origin release', () => {
       ['/scanner', 'E-Waste Classifier'],
       ['/lifespan', 'Lifespan Estimator'],
       ['/inventory', 'Carbon Calculator'],
-      ['/generation', 'E-Waste Generation Forecast'],
       ['/history', 'Activity History'],
     ]) {
       test(`${path} loads from an authenticated deep link`, async ({ page }) => {

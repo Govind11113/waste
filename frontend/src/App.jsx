@@ -13,7 +13,6 @@ const Dashboard = lazy(() => import('./components/Dashboard'))
 const Scanner = lazy(() => import('./components/Scanner'))
 const LifespanPredictor = lazy(() => import('./components/LifespanPredictorV2.jsx'))
 const Inventory = lazy(() => import('./components/Inventory'))
-const GenerationForecast = lazy(() => import('./components/GenerationForecast'))
 const History = lazy(() => import('./components/History'))
 const Signup = lazy(() => import('./components/Signup'))
 const Login = lazy(() => import('./components/Login'))
@@ -52,7 +51,6 @@ function AnimatedRoutes() {
           <Route path="/scanner" element={<ProtectedRoute><Scanner /></ProtectedRoute>} />
           <Route path="/lifespan" element={<ProtectedRoute><LifespanPredictor /></ProtectedRoute>} />
           <Route path="/inventory" element={<ProtectedRoute><Inventory /></ProtectedRoute>} />
-          <Route path="/generation" element={<ProtectedRoute><GenerationForecast /></ProtectedRoute>} />
           <Route path="/history" element={<ProtectedRoute><History /></ProtectedRoute>} />
           <Route path="/privacy" element={<LegalPage page="privacy" />} />
           <Route path="/terms" element={<LegalPage page="terms" />} />

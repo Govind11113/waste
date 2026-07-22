@@ -486,6 +486,77 @@ html {
 .loading-dot:nth-child(2) { animation-delay: 0.2s; }
 .loading-dot:nth-child(3) { animation-delay: 0.4s; }
 
+/* ===== AMBIENT LOOPS (Dashboard hero, cards) =====
+ * Off-round durations and non-linear easings so parallel loops drift out of
+ * sync — reads as hand-crafted rather than machine-perfect. All respect the
+ * prefers-reduced-motion block above.
+ */
+@keyframes drift {
+  0%   { transform: translate3d(0, 0, 0) scale(1); }
+  33%  { transform: translate3d(24px, -18px, 0) scale(1.06); }
+  66%  { transform: translate3d(-16px, 12px, 0) scale(0.97); }
+  100% { transform: translate3d(0, 0, 0) scale(1); }
+}
+.animate-drift        { animation: drift 14.3s cubic-bezier(.45,.05,.55,.95) infinite; }
+.animate-drift-slow   { animation: drift 19.7s cubic-bezier(.45,.05,.55,.95) infinite; animation-delay: -6s; }
+
+@keyframes breathe {
+  0%, 100% { transform: scale(1);    opacity: 1; }
+  50%      { transform: scale(1.045); opacity: .92; }
+}
+.animate-breathe { animation: breathe 4.7s ease-in-out infinite; transform-origin: center; }
+
+@keyframes shimmerText {
+  0%   { background-position: 0% 50%; }
+  100% { background-position: 200% 50%; }
+}
+.animate-title-shine {
+  background: linear-gradient(
+    100deg,
+    var(--on-surface) 0%,
+    var(--on-surface) 42%,
+    var(--primary) 50%,
+    var(--on-surface) 58%,
+    var(--on-surface) 100%
+  );
+  background-size: 220% auto;
+  -webkit-background-clip: text;
+          background-clip: text;
+  color: transparent;
+  animation: shimmerText 6.2s linear infinite;
+}
+
+@keyframes wobble {
+  0%, 100% { transform: rotate(0deg) translateY(0); }
+  25%      { transform: rotate(-3.2deg) translateY(-2px); }
+  50%      { transform: rotate(0deg) translateY(-3px); }
+  75%      { transform: rotate(3.2deg) translateY(-2px); }
+}
+.animate-wobble { animation: wobble 5.5s cubic-bezier(.5,.1,.5,.9) infinite; transform-origin: 50% 80%; display: inline-block; }
+
+@keyframes softGlow {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--primary) 22%, transparent); }
+  50%      { box-shadow: 0 0 0 12px color-mix(in oklab, var(--primary) 0%,  transparent); }
+}
+.animate-soft-glow { animation: softGlow 3.7s ease-out infinite; }
+
+@keyframes barSweep {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(200%); }
+}
+.bar-sweep { position: relative; overflow: hidden; }
+.bar-sweep::after {
+  content: '';
+  position: absolute; inset: 0;
+  background: linear-gradient(100deg, transparent 30%, rgba(255,255,255,.45) 50%, transparent 70%);
+  animation: barSweep 3.4s cubic-bezier(.5,.05,.5,.95) infinite;
+}
+
+@keyframes spinSlow {
+  to { transform: rotate(360deg); }
+}
+.animate-spin-slow { animation: spinSlow 12s linear infinite; }
+
 /* ===== SMOOTH ROUTE TRANSITIONS ===== */
 @keyframes routeEnter {
   from { opacity: 0; transform: translateY(12px); }

@@ -88,14 +88,21 @@ function Dashboard() {
 
   return (
     <AnimatedPage>
-      <div className="pt-32 pb-20 px-8 max-w-7xl mx-auto page-transition">
+      <div className="pt-32 pb-20 px-8 max-w-7xl mx-auto page-transition relative overflow-hidden">
+        {/* Ambient drifting orbs — decorative, hidden from assistive tech */}
+        <div aria-hidden="true" className="pointer-events-none absolute inset-0 -z-10 overflow-hidden">
+          <div className="gradient-orb animate-drift absolute -top-24 -left-24 h-96 w-96 rounded-full" />
+          <div className="gradient-orb animate-drift-slow absolute top-40 -right-32 h-[28rem] w-[28rem] rounded-full" style={{ background: 'radial-gradient(circle at center, var(--secondary-container) 0%, transparent 70%)' }} />
+          <div className="gradient-orb animate-drift absolute bottom-10 left-1/3 h-80 w-80 rounded-full" style={{ animationDelay: '-3.5s' }} />
+        </div>
+
         <header className="mb-12 flex flex-col md:flex-row md:items-center justify-between gap-4 animate-fade-in-down">
           <div>
-            <h1 className="text-5xl font-extrabold text-on-surface tracking-tight mb-2">Dashboard</h1>
+            <h1 className="text-5xl font-extrabold tracking-tight mb-2 animate-title-shine">Dashboard</h1>
             <p className="text-on-surface-variant">Authenticated activity summaries and assumption-based planning values</p>
           </div>
-          <button type="button" onClick={handleRefresh} className="border border-outline text-on-surface px-6 py-3 rounded-xl font-bold hover:bg-surface-container transition-all flex items-center gap-2">
-            <span className="material-symbols-outlined text-lg" aria-hidden="true">refresh</span>
+          <button type="button" onClick={handleRefresh} className="border border-outline text-on-surface px-6 py-3 rounded-xl font-bold hover:bg-surface-container transition-all flex items-center gap-2 group">
+            <span className="material-symbols-outlined text-lg group-hover:animate-spin-slow" aria-hidden="true">refresh</span>
             Refresh
           </button>
         </header>
@@ -117,13 +124,13 @@ function Dashboard() {
           </>
         ) : (
           <>
-            <section className="mb-12 bg-surface-container-lowest p-8 rounded-xl card-shadow">
+            <section className="mb-12 bg-surface-container-lowest p-8 rounded-xl card-shadow relative overflow-hidden">
               <div className="flex items-center gap-4 mb-4">
-                <span className="material-symbols-outlined text-primary text-3xl" aria-hidden="true">eco</span>
+                <span className="material-symbols-outlined text-primary text-3xl animate-breathe" aria-hidden="true">eco</span>
                 <h2 className="text-2xl font-bold text-on-surface">Indicative Material-Recovery CO₂ Estimate</h2>
               </div>
               <div className="flex items-baseline gap-4">
-                <span className="text-6xl font-black text-primary tracking-tight">{animatedCo2.toFixed(1)}</span>
+                <span className="text-6xl font-black text-primary tracking-tight animate-title-shine">{animatedCo2.toFixed(1)}</span>
                 <span className="text-xl text-on-surface-variant">kg</span>
               </div>
               <p className="text-sm text-on-surface-variant mt-2">Profile-based sum for your recognized scans, not a measured recycling outcome. At the 22 kg CO₂/year planning basis, this is {treeYearEquivalent} rounded-up tree-year equivalent{treeYearEquivalent === 1 ? '' : 's'}.</p>
@@ -131,9 +138,18 @@ function Dashboard() {
 
             <section className="mb-12">
               <motion.div className="grid grid-cols-2 md:grid-cols-4 gap-6" variants={stagger} initial="hidden" animate="visible">
-                {bentoItems.map((item) => (
-                  <motion.div key={item.label} variants={fadeInUp} className="bg-surface-container-low p-6 rounded-xl card-shadow">
-                    <span className={`material-symbols-outlined text-3xl ${item.iconColor} mb-4`} aria-hidden="true">{item.icon}</span>
+                {bentoItems.map((item, i) => (
+                  <motion.div
+                    key={item.label}
+                    variants={fadeInUp}
+                    whileHover={{ y: -4, transition: { duration: 0.2 } }}
+                    className="bg-surface-container-low p-6 rounded-xl card-shadow transition-shadow hover:shadow-xl"
+                  >
+                    <span
+                      className={`material-symbols-outlined text-3xl ${item.iconColor} mb-4 animate-wobble`}
+                      style={{ animationDelay: `${-i * 1.3}s` }}
+                      aria-hidden="true"
+                    >{item.icon}</span>
                     <p className="text-2xl font-black text-on-surface">{item.value}</p>
                     <p className="text-sm text-on-surface-variant">{item.label}</p>
                   </motion.div>
@@ -158,7 +174,7 @@ function Dashboard() {
                           <span className="text-on-surface-variant">{count} ({percentage.toFixed(0)}%)</span>
                         </div>
                         <div className="bg-surface-container rounded-full h-3 overflow-hidden">
-                          <div className="h-full rounded-full transition-all duration-1000" style={{ width: `${percentage}%`, backgroundColor: status === 'E-Waste' ? 'var(--error)' : 'var(--primary)' }}></div>
+                          <div className="bar-sweep h-full rounded-full transition-all duration-1000" style={{ width: `${percentage}%`, backgroundColor: status === 'E-Waste' ? 'var(--error)' : 'var(--primary)' }}></div>
                         </div>
                       </div>
                     )
